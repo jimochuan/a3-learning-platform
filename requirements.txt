@@ -19,6 +19,13 @@ langchain-chroma>=1.1.0
 langchain-text-splitters>=1.1.0
 langchain-classic>=1.0.0
 
+# 版本冲突修复（protobuf 7.x 与旧 opentelemetry 不兼容）
+protobuf>=3.20,<7.0
+opentelemetry-api>=1.42.0
+opentelemetry-sdk>=1.42.0
+opentelemetry-proto>=1.42.0
+opentelemetry-exporter-otlp-proto-grpc>=1.42.0
+
 # 本地嵌入模型
 sentence-transformers>=5.0.0
 
