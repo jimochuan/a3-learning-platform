@@ -83,6 +83,7 @@ def render_login_page():
                         st.session_state.current_uid = uid
                         st.session_state.session_resolved = False
                         save_checkpoint(uid)
+                        st.query_params["uid"] = uid  # persist across browser refresh
                         st.session_state.auth_msg = ""
                         if "_show_pwd_hint" in st.session_state:
                             del st.session_state._show_pwd_hint

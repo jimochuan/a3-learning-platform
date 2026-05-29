@@ -11,6 +11,9 @@ import os
 # ---- 向后兼容：从 providers 导出旧版 API 配置 ----
 from providers.compat import SPARK_CONFIG, DEEPSEEK_CONFIG, GLM_CONFIG
 
+# ---- 辅助模型选择 ----
+AUX_MODEL = os.getenv("AUX_MODEL", "deepseek")
+
 # ---- 新增：多供应商诊断 ----
 from providers.diagnostics import test_api_connectivity
 

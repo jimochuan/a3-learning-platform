@@ -7,12 +7,13 @@ A3 v2 RAG 助手 —— ChromaDB 文档检索增强生成
 import os
 from typing import List, Optional
 
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-# chromadb 懒加载（Streamlit Cloud 上 protobuf/opentelemetry 版本冲突，延迟到实际使用时 import）
+# 所有重依赖改为懒加载，避免 Streamlit 启动时卡 6-10 秒
 _chromadb = None
 _embedding_functions = None
+_RecursiveCharacterTextSplitter = None
+_PyPDFLoader = None
+_TextLoader = None
+
 
 def _get_chromadb():
     global _chromadb
@@ -21,12 +22,37 @@ def _get_chromadb():
         _chromadb = _c
     return _chromadb
 
+
 def _get_embedding_functions():
     global _embedding_functions
     if _embedding_functions is None:
         from chromadb.utils import embedding_functions as _ef
         _embedding_functions = _ef
     return _embedding_functions
+
+
+def _get_text_splitter():
+    global _RecursiveCharacterTextSplitter
+    if _RecursiveCharacterTextSplitter is None:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter as _rct
+        _RecursiveCharacterTextSplitter = _rct
+    return _RecursiveCharacterTextSplitter
+
+
+def _get_pdf_loader():
+    global _PyPDFLoader
+    if _PyPDFLoader is None:
+        from langchain_community.document_loaders import PyPDFLoader as _pl
+        _PyPDFLoader = _pl
+    return _PyPDFLoader
+
+
+def _get_text_loader():
+    global _TextLoader
+    if _TextLoader is None:
+        from langchain_community.document_loaders import TextLoader as _tl
+        _TextLoader = _tl
+    return _TextLoader
 
 
 class RAGHelper:
@@ -45,7 +71,7 @@ class RAGHelper:
         self.embeddings = None
         self._embed_init_error = None
 
-        self.text_splitter = RecursiveCharacterTextSplitter(
+        self.text_splitter = _get_text_splitter()(
             chunk_size=1000, chunk_overlap=200, length_function=len,
         )
         self.vectorstore = None
@@ -72,9 +98,9 @@ class RAGHelper:
         """初始化向量数据库（Chromadb 客户端本身不依赖嵌入模型，可提前初始化）"""
         try:
             os.makedirs(self.persist_directory, exist_ok=True)
-            self._chroma_client = chromadb.PersistentClient(
+            self._chroma_client = _get_chromadb().PersistentClient(
                 path=self.persist_directory,
-                settings=chromadb.config.Settings(anonymized_telemetry=False),
+                settings=_get_chromadb().config.Settings(anonymized_telemetry=False),
             )
             # 暂不创建 collection（需要 embedding function，延迟到首次使用时）
             self._collection = None
@@ -94,7 +120,7 @@ class RAGHelper:
     def load_pdf(self, file_path: str) -> bool:
         """加载 PDF 到知识库"""
         try:
-            loader = PyPDFLoader(file_path)
+            loader = _get_pdf_loader()(file_path)
             documents = loader.load()
             chunks = self.text_splitter.split_documents(documents)
 
@@ -111,7 +137,7 @@ class RAGHelper:
     def load_text(self, file_path: str) -> bool:
         """加载文本文件到知识库"""
         try:
-            loader = TextLoader(file_path)
+            loader = _get_text_loader()(file_path)
             documents = loader.load()
             chunks = self.text_splitter.split_documents(documents)
 

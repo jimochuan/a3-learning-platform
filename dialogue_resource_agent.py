@@ -702,6 +702,43 @@ def create_dialogue_agent(course_name: str = "", profile: dict = None) -> Dialog
     return DialogueResourceAgent(course_name=course_name, profile=profile)
 
 
+def generate_knowledge_map(course_name: str, profile: dict = None) -> str:
+    """生成第5类资源: 知识结构图（调用 LLM）
+
+    Args:
+        course_name: 课程名称
+        profile: 学生画像 dict (中文 key)
+
+    Returns:
+        知识结构图 Markdown，失败返回空字符串
+    """
+    try:
+        from agents import create_agents, run_with_fallback
+        import json as _json
+
+        agents_factory = create_agents(course_name=course_name)
+        km_agent = agents_factory.resource_agent()
+
+        profile_str = _json.dumps(profile or {}, ensure_ascii=False)
+        prompt = f"""请为课程"{course_name}"生成一份知识结构图（知识体系树状图）。
+
+要求:
+- 用 ASCII 树状图/大纲展示课程的核心知识体系
+- 标注各模块的层级关系（基础→进阶→高级）
+- 标注重点(★)和难点(▲)
+- 根据学生薄弱环节，在对应节点标注"需加强"
+
+学生画像: {profile_str}
+
+只输出知识结构图，不要其他内容。"""
+        resp, _ = run_with_fallback(km_agent, prompt)
+        if resp and len(resp) > 20:
+            return "\n\n---\n\n## 🟠 知识结构图（第5类资源）\n\n" + resp
+    except Exception:
+        pass
+    return ""
+
+
 # ============================================================================
 # 独立运行演示
 # ============================================================================

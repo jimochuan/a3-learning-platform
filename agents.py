@@ -1,47 +1,98 @@
 """
 =============================================================================
-A3 v3 智能体 —— 六智能体协同
-主力模型: 由 PRIMARY_MODEL 环境变量决定（默认 DeepSeek）
-备用模型: 讯飞星火（系统预置）
-多模型供应商见 providers/ 模块
+A3 v2 智能体 —— 六智能体协同
+主力模型: DeepSeek | 交叉验证: 讯飞星火
 =============================================================================
 """
 import json
 import os
 import time
-from typing import Optional, Dict, Any, Literal, List
+from typing import Optional, Dict, Any, Literal
+
+from typing import List, Dict, Any
 
 from phi.agent import Agent
+from phi.model.openai import OpenAIChat
 
-from providers.factory import SafeOpenAIChat, primary_model, spark_model
-from providers.registry import PROVIDERS, PRIMARY_MODEL
-from providers.compat import SPARK_CONFIG
+from config import SPARK_CONFIG, DEEPSEEK_CONFIG, AUX_MODEL
+from safety import inject_safety_prompt
 
 
 # ============================================================================
-# 模型工厂（薄封装）
+# DeepSeek 兼容层：phidata 默认把 system → developer，
+# 但 DeepSeek API 只认 system/user/assistant/tool，不认 developer。
+# ============================================================================
+class SafeOpenAIChat(OpenAIChat):
+    """OpenAIChat 子类：强制保留 system role（不转 developer）
+
+    兼容所有不支持 developer role 的 OpenAI 兼容 API
+    （DeepSeek、讯飞星火、等）"""
+
+    # 标记：防止 Agent._run() 中重复修复
+    _role_patched = True
+
+    def format_message(self, message, map_system_to_developer=False):
+        """覆盖父类：始终传 map_system_to_developer=False"""
+        return super().format_message(message, map_system_to_developer=False)
+
+    def invoke(self, messages, *args, **kwargs):
+        """修正 messages 中的 developer role → system（双重保险）"""
+        return super().invoke(messages, *args, **kwargs)
+
+    def invoke_stream(self, messages, *args, **kwargs):
+        """修正 messages 中的 developer role → system（双重保险）"""
+        return super().invoke_stream(messages, *args, **kwargs)
+
+    def response(self, messages, *args, **kwargs):
+        """修正 messages 中的 developer role → system（双重保险）"""
+        return super().response(messages, *args, **kwargs)
+
+    def response_stream(self, messages, *args, **kwargs):
+        """修正 messages 中的 developer role → system（双重保险）"""
+        return super().response_stream(messages, *args, **kwargs)
+
+
+# ============================================================================
+# 模型工厂：DeepSeek（主力）+ 讯飞星火（交叉验证）
 # ============================================================================
 def _primary_model(temperature: float = 0.7) -> SafeOpenAIChat:
-    """主力模型：由 PRIMARY_MODEL 环境变量决定"""
-    return primary_model(temperature)
+    """主力模型：DeepSeek（已适配 developer role 兼容）"""
+    return SafeOpenAIChat(
+        id=DEEPSEEK_CONFIG["MODEL"],
+        base_url=DEEPSEEK_CONFIG["BASE_URL"],
+        api_key=DEEPSEEK_CONFIG["API_KEY"],
+        temperature=temperature,
+        max_tokens=DEEPSEEK_CONFIG["MAX_TOKENS"],
+    )
 
 
 def _spark_model(temperature: float = 0.7) -> SafeOpenAIChat:
-    """备用模型：讯飞星火"""
-    return spark_model(temperature)
+    """讯飞星火模型（仅用于交叉验证，不动）"""
+    return SafeOpenAIChat(
+        id=SPARK_CONFIG["MODEL"],
+        base_url=SPARK_CONFIG["BASE_URL"],
+        api_key=f"{SPARK_CONFIG['API_KEY']}:{SPARK_CONFIG['API_SECRET']}",
+        temperature=temperature,
+        max_tokens=SPARK_CONFIG["MAX_TOKENS"],
+    )
 
 
 def _cross_validator(temperature: float = 0.5) -> tuple:
-    """交叉验证模型。返回 (模型实例, 模型名称) 或 (None, "")"""
+    """交叉验证模型：星火
+    返回 (模型实例, 模型名称) 或 (None, "")
+    """
     try:
         m = _spark_model(temperature)
         return (m, "星火")
-    except Exception:
+    except Exception as e:
+        # 静默降级：星火不可用时不影响主流程
+        import logging
+        logging.getLogger(__name__).warning(f"星火模型初始化失败(将跳过交叉验证): {type(e).__name__}")
         return (None, "")
 
 
 # ============================================================================
-# 六智能体（主力模型均可由 PRIMARY_MODEL 切换）
+# 六智能体（主力模型均为 DeepSeek）
 # ============================================================================
 class StudyAgents:
     """六智能体工厂"""
@@ -69,11 +120,14 @@ class StudyAgents:
 5. 学习节奏 - 每周可投入时间 + 快速/正常/精读偏好
 6. 兴趣领域 - 课程中最感兴趣的方向
 
-规则:
-- 从学生发言中客观提取，不要编造
-- 未提到的维度标注"待了解"
-- 输出格式: JSON，每个维度一句话总结"""
-        return Agent(model=self._pm, system_prompt=system_prompt)
+	- 从学生发言中客观提取，不要编造
+	- 未提到的维度标注"待了解"
+	- 每个维度最多问1次，不要换种说法再问一遍
+	- 学生回答模糊时说"没概念"/"不知道"就不追问，直接标注"待了解"然后换维度
+	- 不要连续3轮问同类型问题
+	- 目标：5-8轮对话内完成全部6个维度的了解
+	- 最后输出格式: JSON，每个维度一句话总结"""
+        return Agent(model=self._pm, system_prompt=inject_safety_prompt(system_prompt))
 
     # ---- Agent 2: 资源生成智能体 ----
     def resource_agent(self) -> Agent:
@@ -81,11 +135,12 @@ class StudyAgents:
 
 当前课程: {self.course_name}
 
-你需要生成以下4种资源:
+你需要生成以下5种资源:
 1. 课程讲解文档 - 系统性知识点讲解，含比喻和总结
 2. 练习题目 - 3选择+2简答+1综合，标注难度星级
 3. 拓展阅读 - 推荐论文/书籍/开源项目/课程
 4. 代码实操 - 完整可运行代码 + 中文注释 + 动手实验
+5. 知识结构图 - 课程知识体系树状图（用ASCII/文本绘制），展示核心概念及其层级关系，标注重点难点
 
 个性化要求:
 - 根据学生知识基础调整深度
@@ -94,7 +149,7 @@ class StudyAgents:
 - 内容难度匹配学习节奏
 
 输出使用Markdown格式。"""
-        return Agent(model=self._pm_tutor, system_prompt=system_prompt)
+        return Agent(model=self._pm_tutor, system_prompt=inject_safety_prompt(system_prompt, short=True))
 
     # ---- Agent 3: 路径规划智能体 ----
     def roadmap_agent(self) -> Agent:
@@ -114,7 +169,7 @@ class StudyAgents:
 路径原则: 从易到难，关键节点设检查点，针对薄弱环节加强。
 
 输出Markdown表格格式。"""
-        return Agent(model=self._pm_tutor, system_prompt=system_prompt)
+        return Agent(model=self._pm_tutor, system_prompt=inject_safety_prompt(system_prompt, short=True))
 
     # ---- Agent 4: 智能辅导 + 双向互动智能体 ----
     def tutor_agent(self) -> Agent:
@@ -142,7 +197,7 @@ class StudyAgents:
 - 学生说"不了"必须尊重，绝不追问
 - 测验题必须跟刚讨论的内容相关，不跑题
 - 始终保持鼓励态度"""
-        return Agent(model=self._pm_tutor, system_prompt=system_prompt)
+        return Agent(model=self._pm_tutor, system_prompt=inject_safety_prompt(system_prompt))
 
     # ---- Agent 4b: 薄弱点分析智能体 ----
     def weakness_agent(self) -> Agent:
@@ -170,9 +225,9 @@ class StudyAgents:
 
 ## 路径调整建议
 （指出学习路径中需要加强的步骤）"""
-        return Agent(model=self._pm_eval, system_prompt=system_prompt)
+        return Agent(model=self._pm_eval, system_prompt=inject_safety_prompt(system_prompt))
 
-    # ---- Agent 5: 学习评估智能体 ----
+    # ---- Agent 5: 学习评估智能体（DeepSeek主力） ----
     def eval_agent(self) -> Agent:
         system_prompt = f"""你是一位专业的学习效果评估专家。
 
@@ -186,7 +241,7 @@ class StudyAgents:
 5. 下一步学习建议
 
 客观公正，给出具体可操作建议。输出Markdown格式。"""
-        return Agent(model=self._pm_eval, system_prompt=system_prompt)
+        return Agent(model=self._pm_eval, system_prompt=inject_safety_prompt(system_prompt))
 
     # ---- Agent 6: RAG辅导智能体（基于文档） ----
     def rag_tutor_agent(self) -> Agent:
@@ -198,10 +253,13 @@ class StudyAgents:
 - 引用时标注具体章节或页码
 - 用学生能理解的语言解释
 - 遇到不确定的不编造"""
-        return Agent(model=self._pm, system_prompt=system_prompt)
+        return Agent(model=self._pm, system_prompt=inject_safety_prompt(system_prompt))
 
     # ---- 交叉验证评估（星火） ----
     def cross_validator_agent(self) -> tuple:
+        """星火交叉验证智能体
+        返回 (Agent, 模型名称) 或 (None, "")
+        """
         model, name = _cross_validator(0.5)
         if model is None:
             return (None, "")
@@ -217,10 +275,15 @@ class StudyAgents:
 5. 下一步学习建议
 
 客观公正，输出Markdown格式。"""
-        return (Agent(model=model, system_prompt=system_prompt), name)
+        return (Agent(model=model, system_prompt=inject_safety_prompt(system_prompt)), name)
 
     # ---- 交叉验证 ----
     def cross_validate(self, eval_data: str) -> dict:
+        """DeepSeek评估 + 星火交叉验证 → 融合报告
+
+        返回 {"glm": DeepSeek评估, "spark": 星火评估,
+               "spark_label": "星火", "merged": 融合报告}
+        """
         result = {"glm": None, "spark": None, "spark_label": "星火", "merged": None}
 
         glm_agent = self.eval_agent()
@@ -241,12 +304,13 @@ class StudyAgents:
 
         return result
 
-    def _merge_evals(self, main_eval: str, spark_eval: str, spark_name: str) -> str:
+    def _merge_evals(self, glm_eval: str, spark_eval: str, spark_name: str) -> str:
+        """融合 DeepSeek 和星火评估"""
         merge_prompt = f"""融合以下两份评估报告，生成最终综合评估。
 规则: 一致结论保留, 评分取平均, 分歧标注"双模型存在分歧"并列观点, 建议取并集。
 
-=== 主模型评估报告 ===
-{main_eval}
+=== DeepSeek 评估报告 ===
+{glm_eval}
 
 === {spark_name} 评估报告 ===
 {spark_eval}
@@ -268,17 +332,16 @@ def create_agents(course_name: str = "", student_info: dict = None) -> StudyAgen
 def run_with_fallback(primary_agent: Agent, prompt: str, max_retries: int = 2):
     """带重试和降级的 agent.run() 封装
 
-    先尝试主力模型（PRIMARY_MODEL），重试 max_retries 次。
+    先尝试主力模型（DeepSeek），重试 max_retries 次。
     全部失败后降级到星火。
 
     返回 (response_content: str, model_label: str)
     """
-    label = PROVIDERS.get(PRIMARY_MODEL, {}).get("label", "主力模型")
     last_error = None
     for attempt in range(max_retries):
         try:
             resp = primary_agent.run(prompt, stream=False)
-            return (resp.content, label)
+            return (resp.content, "DeepSeek")
         except Exception as e:
             last_error = e
             if attempt < max_retries - 1:

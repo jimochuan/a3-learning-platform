@@ -14,12 +14,28 @@ import re
 import os
 import logging
 from datetime import datetime
-from openai import OpenAI
 
 from config import PROFILE_DIMENSIONS, DEEPSEEK_CONFIG, test_api_connectivity
 from agents import create_agents, run_with_fallback, stream_chat
 from rag_helper import RAGHelper
+
+# ============================================================================
+# 模型实例缓存 —— 避免每次 rerun 重建 SafeOpenAIChat 连接
+# ============================================================================
+def _get_cached_agents(course_name: str = "", student_info: dict = None):
+    """获取缓存的 StudyAgents 实例，避免重复创建模型连接"""
+    cache_key = "_cached_agents_factory"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = {}
+    cache = st.session_state[cache_key]
+
+    # 按 course_name 缓存（student_info 不影响模型实例）
+    if course_name not in cache:
+        cache[course_name] = create_agents(course_name=course_name)
+    return cache[course_name]
 from dialogue_resource_agent import create_dialogue_agent
+from shared_context import AgentContext, StudentProfile
+from agent_graph import run_agent_step, run_weakness_chain, ctx_to_state, state_to_ctx
 from auth import (
     generate_uid, hash_password, verify_password,
     SECURITY_QUESTION, verify_security_answer, validate_login
@@ -219,12 +235,18 @@ def load_session_from_user(uid):
     if isinstance(records, dict) and records:
         st.session_state.course_name = records.get("course_name", "")
         st.session_state.step = records.get("step", 1)
+        st.session_state._max_step_completed = records.get("step", 1)  # 恢复已完成步骤
         st.session_state.dialogue = records.get("dialogue", [])
         st.session_state.resources = records.get("resources")
         st.session_state.roadmap = records.get("roadmap")
         st.session_state.tutor_history = records.get("tutor_history", [])
         st.session_state.weakness_list = records.get("weakness_list", [])
         st.session_state.eval_report = records.get("eval_report")
+        # 恢复步骤完成标志：有数据 = 该步骤已完成
+        if records.get("resources"):
+            st.session_state.step2_active = False  # Step 2 已完成
+        if records.get("roadmap"):
+            st.session_state.step3_active = False  # Step 3 已完成
     st.session_state.profile = user_data.get("user_portrait", {})
 
 
@@ -275,6 +297,14 @@ def reset_and_switch_user():
 # ============================================================================
 # AUTH GATE — force login before accessing learning features
 # ============================================================================
+# Auto-restore session from URL query params (survives browser refresh / F5)
+if not st.session_state.authenticated:
+    qp_uid = st.query_params.get("uid")
+    if qp_uid and user_has_history(qp_uid):
+        st.session_state.authenticated = True
+        st.session_state.current_uid = qp_uid
+        st.session_state.session_resolved = False
+
 if not st.session_state.authenticated:
     page = st.session_state.auth_page
     if page == "register":
@@ -286,200 +316,6 @@ if not st.session_state.authenticated:
     else:
         render_login_page()
     st.stop()
-
-
-# ============================================================================
-# API 连通性诊断 —— 启动时实际调用各家 API 验证是否可用
-# ============================================================================
-if "api_test_done" not in st.session_state:
-    with st.spinner("正在检测 AI 模型连通性..."):
-        st.session_state._api_results = test_api_connectivity()
-    st.session_state.api_test_done = True
-
-_api = st.session_state._api_results
-_primary_key = _api.get("primary_key", "deepseek")
-
-# ---- 全部不通 -> 阻塞 ----
-if not _api["any_connected"]:
-    st.markdown("""
-<div class="auth-header">
-    <h1>未检测到可用的 AI 模型</h1>
-    <p class="auth-subtitle">至少需要接入一个 API 才能使用学习功能</p>
-</div>
-""", unsafe_allow_html=True)
-
-    st.error("所有 API 均无法连接，请按下面指引配置")
-
-    _providers_to_show = [k for k, v in _api.items()
-                          if k not in ("any_connected", "primary_connected", "primary_key", "_primary")]
-    for _pk in _providers_to_show:
-        _pi = _api[_pk]
-        _emoji = "推荐" if _pk == "deepseek" else ""
-        with st.expander(f"{_emoji} {_pi['label']} - {_pi['desc']}", expanded=(_pk == "deepseek")):
-            st.markdown(f"""
-注册地址: [{_pi['register_url']}]({_pi['register_url']})
-
-{_pi['howto']}
-
-在 .env 中填入 Key 后重启即可。
-""")
-
-    st.info("配置好 .env 后按 F5 刷新页面即可重新检测。系统已预置星火作为兜底。")
-    st.stop()
-
-# ---- 辅助函数：写配置到 .env ----
-def _save_to_env(provider_key: str = None, api_key: str = None, primary_model: str = None):
-    """将 API Key 或主力模型写入 .env 文件"""
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    env_var_map = {
-        "deepseek": "DEEPSEEK_API_KEY",
-        "qwen": "QWEN_API_KEY",
-        "moonshot": "MOONSHOT_API_KEY",
-        "glm": "GLM_API_KEY",
-        "baichuan": "BAICHUAN_API_KEY",
-        "spark": "SPARK_API_KEY",
-    }
-
-    # 如果 .env 不存在，从模板复制
-    if not os.path.exists(env_path):
-        import shutil
-        example_path = os.path.join(os.path.dirname(__file__), ".env.example")
-        if os.path.exists(example_path):
-            shutil.copy(example_path, env_path)
-
-    if not os.path.exists(env_path):
-        return False
-
-    with open(env_path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    import re as _re
-
-    # 写 API Key
-    if provider_key and api_key is not None:
-        var_name = env_var_map.get(provider_key)
-        if var_name:
-            pattern = _re.compile(rf"^{var_name}=.*$", _re.MULTILINE)
-            if pattern.search(content):
-                content = pattern.sub(f"{var_name}={api_key}", content)
-            else:
-                content += f"\n{var_name}={api_key}\n"
-            os.environ[var_name] = api_key
-
-    # 写主力模型
-    if primary_model:
-        pattern = _re.compile(r"^PRIMARY_MODEL=.*$", _re.MULTILINE)
-        if pattern.search(content):
-            content = pattern.sub(f"PRIMARY_MODEL={primary_model}", content)
-        else:
-            content += f"\nPRIMARY_MODEL={primary_model}\n"
-        os.environ["PRIMARY_MODEL"] = primary_model
-
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return True
-
-
-# ---- 所有可配置的供应商列表 ----
-_ALL_PROVIDERS = [
-    k for k, v in _api.items()
-    if k not in ("any_connected", "primary_connected", "primary_key", "_primary")
-]
-
-# ---- 至少有一个通了 -> 侧边栏状态灯 ----
-with st.sidebar:
-    with st.expander("API Status", expanded=not _api["primary_connected"]):
-        # 状态摘要
-        for _pk in _ALL_PROVIDERS:
-            _pi = _api[_pk]
-            if not _pi["ready"]:
-                st.caption(f"○ {_pi['label']}: not configured")
-            elif _pi["connected"]:
-                _mark = "●" if _pk == _primary_key else "○"
-                _active = "(当前)" if _pk == _primary_key else ""
-                st.caption(f"{_mark} {_pi['label']}: {_pi['latency_ms']}ms OK {_active}")
-            else:
-                st.caption(f"⚠ {_pi['label']}: {_pi['error']}")
-
-        st.divider()
-
-        # ---- 切换主力模型 ----
-        _current_primary = os.getenv("PRIMARY_MODEL", "deepseek")
-        _primary_options = {_api[k]["label"]: k for k in _ALL_PROVIDERS if _api[k]["ready"]}
-        _primary_labels = list(_primary_options.keys())
-        if _primary_labels:
-            _current_label = _api.get(_current_primary, {}).get("label", "DeepSeek")
-            if _current_label in _primary_labels:
-                _default_idx = _primary_labels.index(_current_label)
-            else:
-                _default_idx = 0
-
-            _chosen_label = st.selectbox(
-                "主力模型",
-                _primary_labels,
-                index=_default_idx,
-                key="primary_model_selector",
-            )
-            _chosen_key = _primary_options[_chosen_label]
-            if _chosen_key != _current_primary:
-                if _save_to_env(primary_model=_chosen_key):
-                    st.session_state.api_test_done = False
-                    st.rerun()
-
-        # ---- 配置 / 更换 API Key ----
-        _need_rerun = False
-        for _pk in _ALL_PROVIDERS:
-            _pi = _api[_pk]
-            _status_icon = "●" if (_pi["ready"] and _pi["connected"]) else "○"
-            with st.expander(f"{_status_icon} {_pi['label']}", expanded=False):
-                st.caption(_pi["desc"])
-                st.caption(f"注册: {_pi['register_url']}")
-                _current_key = os.getenv(
-                    {"deepseek": "DEEPSEEK_API_KEY", "qwen": "QWEN_API_KEY",
-                     "moonshot": "MOONSHOT_API_KEY", "glm": "GLM_API_KEY",
-                     "baichuan": "BAICHUAN_API_KEY", "spark": "SPARK_API_KEY"}.get(_pk, ""), "")
-                _has_key = bool(_current_key and _current_key not in ("你的Key填这里", ""))
-                if _has_key:
-                    _masked = _current_key[:6] + "****" + _current_key[-4:] if len(_current_key) > 10 else "****"
-                    st.caption(f"当前 Key: {_masked}")
-
-                with st.form(key=f"apikey_form_{_pk}", clear_on_submit=True):
-                    _col1, _col2 = st.columns([3, 1])
-                    with _col1:
-                        _new_key = st.text_input(
-                            "Key",
-                            type="password",
-                            placeholder="sk-..." if not _has_key else "粘贴新 Key 替换",
-                            key=f"apikey_input_{_pk}",
-                            label_visibility="collapsed",
-                        )
-                    with _col2:
-                        _submitted = st.form_submit_button("保存", use_container_width=True)
-                    if _submitted and _new_key.strip():
-                        if _save_to_env(provider_key=_pk, api_key=_new_key.strip()):
-                            st.caption("✓ 已保存")
-                            _need_rerun = True
-
-        if _need_rerun:
-            st.session_state.api_test_done = False
-            st.rerun()
-
-    if not _api["primary_connected"]:
-        _expected_label = _api["_primary"]["label"]
-        st.warning(f"Your {_expected_label} is not working. Using Spark as fallback.")
-
-# ---- 用户的 Key 有问题 -> 顶部展开详情 ----
-if not _api["primary_connected"]:
-    _user_providers = {k: v for k, v in _api.items()
-                       if k not in ("any_connected", "primary_connected", "primary_key", "_primary", "spark")
-                       and v["ready"] and not v["connected"]}
-    if _user_providers:
-        with st.expander("Your API Key Issues - Click for details", expanded=True):
-            for _pk, _pi in _user_providers.items():
-                st.error(f"**{_pi['label']}**: {_pi['error']}")
-                st.markdown(f"Sign up: [{_pi['register_url']}]({_pi['register_url']})")
-                st.caption(f"{_pi['howto']}")
-            st.info("System auto-fellback to Spark. All features work normally.")
 
 
 # ============================================================================
@@ -512,6 +348,7 @@ def _generate_change_summary(changes_info: dict) -> str:
 不要逐条罗列——给出一个整体的概括。直接输出总结文字。"""
 
     try:
+        from openai import OpenAI
         client = OpenAI(
             api_key=DEEPSEEK_CONFIG.get("API_KEY", os.getenv("DEEPSEEK_API_KEY", "")),
             base_url=DEEPSEEK_CONFIG.get("BASE_URL", "https://api.deepseek.com/v1"),
@@ -664,6 +501,7 @@ if not st.session_state.session_resolved:
                         st.session_state.step2_active = True
                         st.session_state.roadmap = None
                         st.session_state.step = 2
+                        st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 2)
                         # 清理缓存
                         if cache_key in st.session_state:
                             del st.session_state[cache_key]
@@ -739,10 +577,115 @@ LEARNING_DEFAULTS = {
     "step2_messages": [],
     "step2_active": True,
     "_profile_complete": False,
+    "_agent_ctx": None,  # LangGraph AgentContext (Phase 3)
 }
 for k, v in LEARNING_DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+
+# ============================================================================
+# LangGraph AgentContext 同步助手（Phase 3）
+# ============================================================================
+def _get_agent_ctx() -> AgentContext:
+    """获取或创建 AgentContext"""
+    if not st.session_state._agent_ctx:
+        ctx = AgentContext(
+            uid=str(st.session_state.get("current_uid", "")),
+            course_name=st.session_state.get("course_name", ""),
+        )
+        ctx.stamp()
+        _sync_to_ctx(ctx)
+        st.session_state._agent_ctx = ctx.to_dict()
+    else:
+        ctx = AgentContext.from_dict(st.session_state._agent_ctx)
+        # 保持 course_name 同步
+        if st.session_state.get("course_name") and ctx.course_name != st.session_state.course_name:
+            ctx.course_name = st.session_state.course_name
+    return ctx
+
+
+def _sync_to_ctx(ctx: AgentContext):
+    """将 session_state 中的现有数据同步到 AgentContext"""
+    # Profile
+    if st.session_state.get("profile") and any(
+        v and v != "待了解" for v in (st.session_state.profile or {}).values()
+    ):
+        if ctx.profile is None or not ctx.profile.is_complete():
+            ctx.profile = StudentProfile.from_dict(st.session_state.profile)
+
+    # Resources
+    if st.session_state.get("resources"):
+        from shared_context import LearningResources
+        if ctx.resources is None or not ctx.resources.report_markdown:
+            ctx.resources = LearningResources(
+                course_name=st.session_state.get("course_name", ""),
+                report_markdown=st.session_state.resources,
+            )
+
+    # Roadmap
+    if st.session_state.get("roadmap"):
+        from shared_context import LearningRoadmap
+        if ctx.roadmap is None or not ctx.roadmap.report_markdown:
+            ctx.roadmap = LearningRoadmap(
+                course_name=st.session_state.get("course_name", ""),
+                report_markdown=st.session_state.roadmap,
+            )
+
+    # Tutor history
+    if st.session_state.get("tutor_history"):
+        from shared_context import TutorSession
+        if ctx.tutor_session is None or not ctx.tutor_session.chat_history:
+            chat_history = []
+            for h in st.session_state.tutor_history:
+                chat_history.append({"role": "user", "content": h.get("question", "")})
+                chat_history.append({"role": "assistant", "content": h.get("answer", "")})
+            ctx.tutor_session = TutorSession(chat_history=chat_history)
+            # Sync weakness records
+            if st.session_state.get("weakness_list"):
+                ctx.tutor_session.weakness_records = st.session_state.weakness_list
+
+    # Eval
+    if st.session_state.get("eval_report"):
+        from shared_context import EvaluationReport
+        if ctx.evaluation is None or not ctx.evaluation.report_markdown:
+            ctx.evaluation = EvaluationReport(
+                report_markdown=st.session_state.eval_report,
+            )
+
+    ctx.stamp()
+    st.session_state._agent_ctx = ctx.to_dict()
+
+
+def _sync_from_ctx(ctx: AgentContext):
+    """将 AgentContext 中的更新数据回写到 session_state"""
+    changed = False
+
+    # Roadmap（可能被 Weakness→Eval 链自动更新）
+    if ctx.roadmap and ctx.roadmap.report_markdown:
+        if st.session_state.get("roadmap") != ctx.roadmap.report_markdown:
+            st.session_state.roadmap = ctx.roadmap.report_markdown
+            changed = True
+
+    # Eval（可能被自动触发）
+    if ctx.evaluation and ctx.evaluation.report_markdown:
+        if st.session_state.get("eval_report") != ctx.evaluation.report_markdown:
+            st.session_state.eval_report = ctx.evaluation.report_markdown
+            changed = True
+
+    # Weakness（可能被自动追加）
+    if ctx.tutor_session and ctx.tutor_session.weakness_records:
+        existing = st.session_state.get("weakness_list", [])
+        new_records = ctx.tutor_session.weakness_records
+        if len(new_records) > len(existing):
+            st.session_state.weakness_list = new_records
+            changed = True
+
+    if changed:
+        st.session_state._agent_ctx = ctx.to_dict()
+
+    return changed
+
 
 # ============================================================================
 # Header
@@ -750,15 +693,173 @@ for k, v in LEARNING_DEFAULTS.items():
 st.markdown(f"""
 <div class="main-header">
     <h1>A3 个性化学习系统 v3</h1>
-    <p>六智能体协同 · 个性化学习 · UID: {st.session_state.current_uid}</p>
+    <p>六智能体协同 · 个性化学习</p>
 </div>
 """, unsafe_allow_html=True)
+
+
+# ============================================================================
+# API Key 写入 .env
+# ============================================================================
+def _save_to_env(provider_key: str = None, api_key: str = None, primary_model: str = None):
+    """将 API Key 或主力模型写入 .env 文件"""
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    env_var_map = {
+        "deepseek": "DEEPSEEK_API_KEY",
+        "qwen": "QWEN_API_KEY",
+        "moonshot": "MOONSHOT_API_KEY",
+        "glm": "GLM_API_KEY",
+        "baichuan": "BAICHUAN_API_KEY",
+        "spark": "SPARK_API_KEY",
+    }
+    if not os.path.exists(env_path):
+        import shutil
+        example_path = os.path.join(os.path.dirname(__file__), ".env.example")
+        if os.path.exists(example_path):
+            shutil.copy(example_path, env_path)
+    if not os.path.exists(env_path):
+        return False
+    with open(env_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    import re as _re
+    if provider_key and api_key is not None:
+        var_name = env_var_map.get(provider_key)
+        if var_name:
+            pattern = _re.compile(rf"^{var_name}=.*$", _re.MULTILINE)
+            if pattern.search(content):
+                content = pattern.sub(f"{var_name}={api_key}", content)
+            else:
+                content += f"\n{var_name}={api_key}\n"
+            os.environ[var_name] = api_key
+    if primary_model:
+        pattern = _re.compile(r"^PRIMARY_MODEL=.*$", _re.MULTILINE)
+        if pattern.search(content):
+            content = pattern.sub(f"PRIMARY_MODEL={primary_model}", content)
+        else:
+            content += f"\nPRIMARY_MODEL={primary_model}\n"
+        os.environ["PRIMARY_MODEL"] = primary_model
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return True
+
+
+# ============================================================================
+# API 连通性诊断（启动时运行一次）
+# ============================================================================
+if "api_test_done" not in st.session_state:
+    with st.spinner("正在检测 AI 模型连通性..."):
+        st.session_state._api_results = test_api_connectivity()
+    st.session_state.api_test_done = True
+
+_api = st.session_state._api_results
+_primary_key = _api.get("primary_key", "deepseek")
+_ALL_PROVIDERS = [
+    k for k, v in _api.items()
+    if k not in ("any_connected", "primary_connected", "primary_key", "_primary")
+]
+
+# ---- 全部不通 → 阻塞提示 ----
+if not _api["any_connected"]:
+    st.markdown("""
+<div class="auth-header">
+    <h1>未检测到可用的 AI 模型</h1>
+    <p class="auth-subtitle">至少需要接入一个 API 才能使用学习功能。系统已预置星火作为兜底。</p>
+</div>
+""", unsafe_allow_html=True)
+    st.error("所有 API 均无法连接，请在下方填入 API Key 或检查网络。")
+    with st.sidebar:
+        with st.expander("API Status", expanded=True):
+            for _pk in _ALL_PROVIDERS:
+                _pi = _api[_pk]
+                st.caption(f"○ {_pi['label']}: not configured")
+            st.divider()
+            for _pk in _ALL_PROVIDERS:
+                _pi = _api[_pk]
+                with st.expander(f"○ {_pi['label']}", expanded=(_pk == "deepseek")):
+                    st.caption(_pi["desc"])
+                    st.caption(f"注册: {_pi['register_url']}")
+                    with st.form(key=f"apikey_blocked_{_pk}", clear_on_submit=True):
+                        _col1, _col2 = st.columns([3, 1])
+                        with _col1:
+                            _new_key = st.text_input("Key", type="password", placeholder="sk-...", key=f"apikey_blocked_input_{_pk}", label_visibility="collapsed")
+                        with _col2:
+                            _submitted = st.form_submit_button("保存", use_container_width=True)
+                        if _submitted and _new_key.strip():
+                            if _save_to_env(provider_key=_pk, api_key=_new_key.strip()):
+                                st.session_state.api_test_done = False
+                                st.rerun()
+    st.info("填入 Key 后自动生效，无需重启。系统已预置星火作为最后兜底。")
+    st.stop()
 
 
 # ============================================================================
 # Sidebar
 # ============================================================================
 with st.sidebar:
+    # ---- API 状态面板 ----
+    with st.expander("API Status", expanded=not _api["primary_connected"]):
+        for _pk in _ALL_PROVIDERS:
+            _pi = _api[_pk]
+            if not _pi["ready"]:
+                st.caption(f"○ {_pi['label']}: not configured")
+            elif _pi["connected"]:
+                _mark = "●" if _pk == _primary_key else "○"
+                _active = "(当前)" if _pk == _primary_key else ""
+                st.caption(f"{_mark} {_pi['label']}: {_pi['latency_ms']}ms OK {_active}")
+            else:
+                st.caption(f"⚠ {_pi['label']}: {_pi['error']}")
+
+        st.divider()
+
+        # 切换主力模型
+        _current_primary = os.getenv("PRIMARY_MODEL", "deepseek")
+        _primary_options = {_api[k]["label"]: k for k in _ALL_PROVIDERS if _api[k]["ready"]}
+        _primary_labels = list(_primary_options.keys())
+        if _primary_labels:
+            _current_label = _api.get(_current_primary, {}).get("label", "DeepSeek")
+            if _current_label in _primary_labels:
+                _default_idx = _primary_labels.index(_current_label)
+            else:
+                _default_idx = 0
+            _chosen_label = st.selectbox("主力模型", _primary_labels, index=_default_idx, key="primary_model_selector")
+            _chosen_key = _primary_options[_chosen_label]
+            if _chosen_key != _current_primary:
+                if _save_to_env(primary_model=_chosen_key):
+                    st.session_state.api_test_done = False
+                    st.rerun()
+
+        # 配置/更换 Key
+        _need_rerun = False
+        for _pk in _ALL_PROVIDERS:
+            _pi = _api[_pk]
+            _status_icon = "●" if (_pi["ready"] and _pi["connected"]) else "○"
+            with st.expander(f"{_status_icon} {_pi['label']}", expanded=False):
+                st.caption(_pi["desc"])
+                st.caption(f"注册: {_pi['register_url']}")
+                _current_key = os.getenv({
+                    "deepseek": "DEEPSEEK_API_KEY", "qwen": "QWEN_API_KEY",
+                    "moonshot": "MOONSHOT_API_KEY", "glm": "GLM_API_KEY",
+                    "baichuan": "BAICHUAN_API_KEY", "spark": "SPARK_API_KEY",
+                }.get(_pk, ""), "")
+                _has_key = bool(_current_key and _current_key not in ("你的Key填这里", ""))
+                if _has_key:
+                    _masked = _current_key[:6] + "****" + _current_key[-4:] if len(_current_key) > 10 else "****"
+                    st.caption(f"当前 Key: {_masked}")
+                with st.form(key=f"apikey_form_{_pk}", clear_on_submit=True):
+                    _col1, _col2 = st.columns([3, 1])
+                    with _col1:
+                        _new_key = st.text_input("Key", type="password", placeholder="sk-..." if not _has_key else "粘贴新 Key 替换", key=f"apikey_input_{_pk}", label_visibility="collapsed")
+                    with _col2:
+                        _submitted = st.form_submit_button("保存", use_container_width=True)
+                    if _submitted and _new_key.strip():
+                        if _save_to_env(provider_key=_pk, api_key=_new_key.strip()):
+                            st.caption("✓ 已保存")
+                            _need_rerun = True
+        if _need_rerun:
+            st.session_state.api_test_done = False
+            st.rerun()
+
+    st.divider()
     st.markdown("## ⚙️ 控制台")
 
     st.markdown(f"### 👤 用户: {st.session_state.current_uid}")
@@ -809,25 +910,90 @@ with st.sidebar:
     st.divider()
 
     if st.button("🧹 重新开始", type="primary", use_container_width=True):
-        for k in list(st.session_state.keys()):
-            if not k.startswith("_") and k not in ("authenticated", "current_uid", "session_resolved"):
-                del st.session_state[k]
-        for k, v in LEARNING_DEFAULTS.items():
-            st.session_state[k] = v
-        auto_save_and_rerun()
+        st.session_state._show_restart_confirm = True
+
+    if st.session_state.get("_show_restart_confirm"):
+        st.warning("⚠️ 这会清除当前所有学习进度，确定重新开始吗？")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            if st.button("✅ 确定清除", type="primary", use_container_width=True):
+                for k in list(st.session_state.keys()):
+                    if not k.startswith("_") and k not in ("authenticated", "current_uid", "session_resolved"):
+                        del st.session_state[k]
+                for k, v in LEARNING_DEFAULTS.items():
+                    st.session_state[k] = v
+                st.session_state._show_restart_confirm = False
+                st.session_state._max_step_completed = 1
+                auto_save_and_rerun()
+        with cc2:
+            if st.button("❌ 取消", use_container_width=True):
+                st.session_state._show_restart_confirm = False
+                st.rerun()
+
+    st.divider()
+
+    # ---- 全局步骤导航 ----
+    st.markdown("### 📋 学习步骤")
+
+    STEP_LABELS = {
+        1: "1. AI 画像",
+        2: "2. 学习资源",
+        3: "3. 学习路径",
+        4: "4. 智能辅导",
+        5: "5. 学习评估",
+    }
+
+    current_step = st.session_state.get("step", 1)
+
+    # 根据实际数据判断步骤完成情况（更可靠，不依赖 _max_step_completed 追踪）
+    def _step_data_exists(step_num):
+        """检查步骤对应的数据是否已生成"""
+        if step_num == 1:
+            return bool(st.session_state.get("profile") and any(
+                v and v != "待了解" for v in (st.session_state.profile or {}).values()
+            ))
+        if step_num == 2:
+            return bool(st.session_state.get("resources"))
+        if step_num == 3:
+            return bool(st.session_state.get("roadmap"))
+        if step_num == 4:
+            return bool(st.session_state.get("tutor_history"))
+        if step_num == 5:
+            return bool(st.session_state.get("eval_report"))
+        return False
+
+    # 动态推断最高已完成步骤
+    max_completed = 1
+    for s in range(1, 6):
+        if _step_data_exists(s) or s <= current_step:
+            max_completed = s
+
+    for step_num in range(1, 6):
+        label = STEP_LABELS[step_num]
+        if step_num == current_step:
+            st.markdown(f"**🔵 {label}**  ← 当前")
+        elif step_num <= max_completed:
+            if st.button(f"✅ {label}", key=f"nav_step_{step_num}", use_container_width=True):
+                st.session_state.step = step_num
+                st.rerun()
+        else:
+            st.markdown(f"⚪ {label}")
 
 
 # ============================================================================
 # Step 1: AI 对话 —— 选课 + 画像（后台）
 # ============================================================================
 if st.session_state.step == 1:
-    st.markdown('<p class="phase-title">Step 1: 开始学习 —— AI 对话了解你</p>', unsafe_allow_html=True)
+    st.markdown('<p class="phase-title">Step 1: AI 画像 —— 聊聊你的学习情况，系统了解你</p>', unsafe_allow_html=True)
 
-    # ---- 对话完成 → 自动进入 Step 2 ----
-    if st.session_state.get("_profile_complete"):
+    # ---- 对话完成 → 自动进入 Step 2（首次完成时自动跳转，返回浏览时不跳） ----
+    if st.session_state.get("_profile_complete") and not st.session_state.get("_navigated_back"):
         st.success("✅ 学习画像分析完成，正在为你生成个性化学习方案...")
         st.session_state.step = 2
+        st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 2)
         auto_save_and_rerun()
+    if st.session_state.get("_navigated_back"):
+        st.session_state._navigated_back = False
 
     # ---- AI 对话区 ----
     for msg in st.session_state.dialogue[-10:]:
@@ -836,7 +1002,7 @@ if st.session_state.step == 1:
 
     # 初始化：AI 发第一条消息
     if not st.session_state.dialogue:
-        agents = create_agents()
+        agents = _get_cached_agents()
         profile_bot = agents.profile_agent()
         init_prompt = """你是一位友好专业的学习顾问，通过自然对话了解学生。
 
@@ -871,14 +1037,14 @@ if st.session_state.step == 1:
         # 第一次回复后提取课程名
         if not st.session_state.course_name:
             extract_prompt = f"学生说: {user_input}\n提取学生想学的课程名称（1-3个词）。只输出课程名。"
-            agents = create_agents()
+            agents = _get_cached_agents()
             tmp_agent = agents.profile_agent()
             course_resp, _ = run_with_fallback(tmp_agent, extract_prompt)
             st.session_state.course_name = course_resp.strip().replace("《", "").replace("》", "").replace(" ", "")
             if not st.session_state.course_name:
                 st.session_state.course_name = "未指定课程"
 
-        agents = create_agents(course_name=st.session_state.course_name)
+        agents = _get_cached_agents(course_name=st.session_state.course_name)
         profile_bot = agents.profile_agent()
 
         history_text = "\n".join([
@@ -939,6 +1105,10 @@ E. 先简短回应上一句（半句），再自然过渡到新问题，保持�
         next_q = result.get("next_question", "")
         if "[PROFILE_COMPLETE]" in next_q or "[PROFILE_COMPLETE]" in content:
             st.session_state._profile_complete = True
+            # Phase 3: Sync profile to AgentContext for downstream agents
+            ctx = _get_agent_ctx()
+            ctx.profile = StudentProfile.from_dict(st.session_state.profile)
+            _sync_to_ctx(ctx)
             st.session_state.dialogue.append({
                 "role": "assistant",
                 "content": "好的，我对你的学习情况已经足够了解了！正在为你生成个性化学习方案..."
@@ -951,10 +1121,27 @@ E. 先简短回应上一句（半句），再自然过渡到新问题，保持�
 
 
 # ============================================================================
+
+    # ---- 导航：画像完成后可进入下一步 ----
+    if st.session_state.get("_profile_complete"):
+        st.divider()
+        if st.button("→ 进入 Step 2: 学习资源", key="step1_next", type="primary", use_container_width=True):
+            st.session_state.step = 2
+            st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 2)
+            st.rerun()
 # Step 2: 对话式偏好提取 + 双层资源推荐
 # ============================================================================
 elif st.session_state.step == 2:
     st.markdown('<p class="phase-title">Step 2: 个性化学习资源</p>', unsafe_allow_html=True)
+
+    # ---- 导航：返回上一步 ----
+    c_back, c_forward = st.columns([1, 5])
+    with c_back:
+        if st.button("← 返回", key="step2_back", use_container_width=True):
+            st.session_state._navigated_back = True
+            st.session_state.step = 1
+            st.rerun()
+
     st.caption(f"📖 课程：{st.session_state.course_name} | AI 对话了解你的偏好，双层资源精准推荐")
 
     if st.session_state.step2_agent is None:
@@ -962,16 +1149,21 @@ elif st.session_state.step == 2:
             course_name=st.session_state.course_name,
             profile=st.session_state.profile
         )
-        st.session_state.step2_messages = []
-        st.session_state.step2_active = True
-
-        # Phase 2: 如果 profile 完整且无问题需要追问，直接生成资源
+        # 如果已有 profile（Step 1 完成），直接生成资源，不走对话
         agent_temp = st.session_state.step2_agent
-        if len(agent_temp.questions) == 0 and st.session_state.profile:
-            st.session_state.resources = agent_temp.generate_report()
-            st.session_state.step2_active = False
-            st.session_state._refresh_resources = False
-            st.session_state._refresh_resources_was_auto = True
+        if st.session_state.get("profile") and any(
+            v and v != "待了解" for v in (st.session_state.profile or {}).values()
+        ):
+            try:
+                st.session_state.resources = agent_temp.generate_report()
+                st.session_state.step2_active = False
+                _sync_to_ctx(_get_agent_ctx())  # Phase 3
+            except Exception:
+                st.session_state.step2_messages = []
+                st.session_state.step2_active = True
+        else:
+            st.session_state.step2_messages = []
+            st.session_state.step2_active = True
 
     agent = st.session_state.step2_agent
 
@@ -994,6 +1186,7 @@ elif st.session_state.step == 2:
             if result["is_complete"]:
                 st.session_state.step2_active = False
                 st.session_state.resources = agent.generate_report()
+                _sync_to_ctx(_get_agent_ctx())  # Phase 3
                 st.session_state.step2_messages.append({
                     "role": "assistant",
                     "content": "好的，我已经了解你的学习偏好了！下面是我为你定制的双层资源推荐 👇"
@@ -1006,11 +1199,33 @@ elif st.session_state.step == 2:
                 })
                 auto_save_and_rerun()
 
+    # 如果 step2 对话已完成但 resources 为空（恢复会话/导航回来时可能丢失），重新生成
+    if not st.session_state.step2_active and not st.session_state.resources:
+        agent_temp = st.session_state.step2_agent
+        if agent_temp is not None:
+            try:
+                st.session_state.resources = agent_temp.generate_report()
+                _sync_to_ctx(_get_agent_ctx())  # Phase 3
+            except Exception:
+                pass
+
     if not st.session_state.step2_active and st.session_state.resources:
         # Phase 2: 智能刷新提示
         if st.session_state.get("_refresh_resources_was_auto") and not st.session_state.step2_messages:
             st.success("🔄 已基于你的最新画像自动生成个性化资源推荐（无需重复对话）")
             st.session_state._refresh_resources_was_auto = False
+
+        # Phase 3.5: Ensure 5th resource type (知识结构图) — 赛题要求 >=5 种资源
+        if "知识结构图" not in st.session_state.resources:
+            with st.spinner("🧠 生成知识结构图（第5类资源）..."):
+                from dialogue_resource_agent import generate_knowledge_map
+                km = generate_knowledge_map(
+                    st.session_state.course_name,
+                    st.session_state.profile
+                )
+                if km:
+                    st.session_state.resources += km
+                    _sync_to_ctx(_get_agent_ctx())
 
         with st.expander("💬 查看偏好提取对话", expanded=False):
             for msg in st.session_state.step2_messages:
@@ -1050,14 +1265,30 @@ elif st.session_state.step == 2:
         with c3:
             if st.button("→ 进入路径规划", type="primary", use_container_width=True):
                 st.session_state.step = 3
+                st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 3)
                 auto_save_and_rerun()
 
 
 # ============================================================================
 # Step 3: 路径规划
 # ============================================================================
+
+    # ---- 导航：进入下一步 ----
+    st.divider()
+    if st.button("→ 进入 Step 3: 学习路径", key="step2_next", type="primary", use_container_width=True):
+        st.session_state.step = 3
+        st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 3)
+        st.rerun()
 elif st.session_state.step == 3:
     st.markdown('<p class="phase-title">Step 3: 学习路径规划</p>', unsafe_allow_html=True)
+
+    c_back, c_forward = st.columns([1, 5])
+    with c_back:
+        if st.button("← 返回", key="step3_back", use_container_width=True):
+            st.session_state._navigated_back = True
+            st.session_state.step = 2
+            st.rerun()
+
     st.caption(f"📖 课程：{st.session_state.course_name} | 精简高效的学习路径")
 
     # Phase 2: 智能刷新提示（在生成完成后显示）
@@ -1065,30 +1296,31 @@ elif st.session_state.step == 3:
 
     if not st.session_state.roadmap:
         with st.spinner("正在规划你的学习路径..."):
-            agents = create_agents(
-                course_name=st.session_state.course_name,
-                student_info=st.session_state.profile
-            )
-            roadmap_agent = agents.roadmap_agent()
-            profile_str = json.dumps(st.session_state.profile, ensure_ascii=False)
-            # 提取 Step 2 资源报告中的偏好摘要
-            resources_hint = ""
-            if st.session_state.resources:
-                # 取资源报告前 800 字符作为上下文（含画像表格 + 偏好信息）
-                resources_hint = f"\n已推荐资源摘要:\n{st.session_state.resources[:800]}"
-            prompt = f"""课程: {st.session_state.course_name}
+            # Phase 3: Use LangGraph graph for roadmap generation
+            ctx = _get_agent_ctx()
+            _sync_to_ctx(ctx)  # Ensure ctx has latest profile + resources
+            ctx = run_agent_step(ctx, "roadmap")
+            if ctx.roadmap and ctx.roadmap.report_markdown:
+                st.session_state.roadmap = ctx.roadmap.report_markdown
+            else:
+                # Fallback: direct call if graph fails
+                agents = _get_cached_agents(
+                    course_name=st.session_state.course_name,
+                    student_info=st.session_state.profile
+                )
+                roadmap_agent = agents.roadmap_agent()
+                profile_str = json.dumps(st.session_state.profile, ensure_ascii=False)
+                resources_hint = ""
+                if st.session_state.resources:
+                    resources_hint = f"\n已推荐资源摘要:\n{st.session_state.resources[:800]}"
+                prompt = f"""课程: {st.session_state.course_name}
 学生画像: {profile_str}{resources_hint}
 
-规划5-8步精简学习路径。输出Markdown表格:
-
-| 步骤 | 难度 | 学习目标 | 推荐资源 |
-|------|------|----------|----------|
-| 1. xx | ★★ | xx | xx |
-
-从易到难，关键节点设检查点，针对薄弱环节加强。利用已推荐资源中的偏好信息调整路径难度和资源类型。"""
-            resp, _ = run_with_fallback(roadmap_agent, prompt)
-            st.session_state.roadmap = resp
+规划5-8步精简学习路径。输出Markdown表格。"""
+                resp, _ = run_with_fallback(roadmap_agent, prompt)
+                st.session_state.roadmap = resp
             st.session_state._refresh_roadmap = False
+            _sync_to_ctx(ctx)  # Phase 3: persist result
         auto_save_and_rerun()
 
     if was_refresh and st.session_state.roadmap:
@@ -1117,18 +1349,34 @@ elif st.session_state.step == 3:
     with c2:
         if st.button("→ 进入辅导", type="primary", use_container_width=True):
             st.session_state.step = 4
+            st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 4)
             auto_save_and_rerun()
     with c3:
         if st.button("📊 学习评估", use_container_width=True):
             st.session_state.step = 5
+            st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 5)
             auto_save_and_rerun()
 
 
 # ============================================================================
 # Step 4: 智能辅导 + RAG
 # ============================================================================
+
+    st.divider()
+    if st.button("→ 进入 Step 4: 智能辅导", key="step3_next", type="primary", use_container_width=True):
+        st.session_state.step = 4
+        st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 4)
+        st.rerun()
 elif st.session_state.step == 4:
     st.markdown('<p class="phase-title">Step 4: 智能辅导</p>', unsafe_allow_html=True)
+
+    c_back, c_forward = st.columns([1, 5])
+    with c_back:
+        if st.button("← 返回", key="step4_back", use_container_width=True):
+            st.session_state._navigated_back = True
+            st.session_state.step = 3
+            st.rerun()
+
 
     tab1, tab2 = st.tabs(["💬 概念辅导", "📚 RAG 文档问答"])
 
@@ -1139,16 +1387,27 @@ elif st.session_state.step == 4:
             st.markdown("### 双向互动辅导")
             st.caption("AI 会回答你的问题，也可能在讲解后出题测试你的理解。答不上来会帮你补充学习资源。")
 
+            # Show conversation history first (newest at bottom, each collapsible)
+            if st.session_state.tutor_history:
+                for i, entry in enumerate(st.session_state.tutor_history):
+                    q_preview = entry['question'][:60] + ('...' if len(entry['question']) > 60 else '')
+                    with st.expander(f"Q: {q_preview} ({entry['time']})", expanded=(i == len(st.session_state.tutor_history) - 1)):
+                        st.markdown(entry["answer"])
+
+            # Input area below conversation
+            st.divider()
+
+            # Clear input after send (must happen before widget is rendered)
+            if st.session_state.get("_clear_tutor_input"):
+                st.session_state.tutor_question = ""
+                st.session_state._clear_tutor_input = False
+
             question = st.text_area("输入你的内容",
                                      placeholder="可以提问、回答 AI 的测验、或者说「考考我」主动要求测试",
-                                     height=100, key="tutor_question")
-
-            context_hint = st.text_input("补充上下文（可选）",
-                                          placeholder="比如：我在学机器学习第三章，卡在优化算法部分",
-                                          key="tutor_context")
+                                     height=80, key="tutor_question")
 
             if st.button("💬 发送", type="primary", disabled=not question.strip()):
-                agents = create_agents(
+                agents = _get_cached_agents(
                     course_name=st.session_state.course_name,
                     student_info=st.session_state.profile
                 )
@@ -1161,7 +1420,6 @@ elif st.session_state.step == 4:
 
                 prompt = f"""学生画像: {profile_str}
 当前课程: {st.session_state.course_name}
-补充信息: {context_hint if context_hint else '无'}
 
 最近对话:
 {history_text}
@@ -1187,20 +1445,36 @@ elif st.session_state.step == 4:
                     correct_ans = weakness_match.group(3)
                     full = re.sub(r'\n?\[WEAKNESS:.+?\]', '', full)
 
+                    # Phase 4: Run LangGraph collaboration chain (Weakness → Eval → Roadmap)
                     with st.spinner("正在分析薄弱点并生成补救方案..."):
-                        wa = agents.weakness_agent()
-                        wa_prompt = f"""课程: {st.session_state.course_name}
-学生画像: {profile_str}
+                        ctx = _get_agent_ctx()
+                        _sync_to_ctx(ctx)
+                        weakness_detail = f"{topic}|||{student_ans}|||{correct_ans}"
+                        ctx = run_weakness_chain(ctx, weakness_detail)
+
+                        wa_resp = ""
+                        if ctx.tutor_session and ctx.tutor_session.weakness_records:
+                            latest = ctx.tutor_session.weakness_records[-1]
+                            wa_resp = latest.get("diagnosis", latest.get("analysis", ""))
+
+                        if not wa_resp:
+                            # Fallback: direct weakness call
+                            wa = agents.weakness_agent()
+                            wa_prompt = f"""课程: {st.session_state.course_name}
 薄弱知识点: {topic}
 学生错误回答: {student_ans}
 正确答案: {correct_ans}
-当前学习路径:
-{st.session_state.roadmap[:1500] if st.session_state.roadmap else '未生成'}
-
 分析薄弱点并生成补救方案。"""
-                        wa_resp, _ = run_with_fallback(wa, wa_prompt)
+                            wa_resp, _ = run_with_fallback(wa, wa_prompt)
+
                         full += "\n---\n\n## 📍 薄弱点分析与补救方案\n\n" + wa_resp
                         status.update(label="薄弱点分析完成", state="complete")
+
+                        # Sync updated roadmap/eval back to session
+                        if ctx.roadmap and ctx.roadmap.report_markdown:
+                            st.session_state.roadmap = ctx.roadmap.report_markdown
+                        if ctx.evaluation and ctx.evaluation.report_markdown:
+                            st.session_state.eval_report = ctx.evaluation.report_markdown
 
                     st.session_state.weakness_list.append({
                         "topic": topic,
@@ -1216,14 +1490,10 @@ elif st.session_state.step == 4:
                     "answer": full,
                     "time": datetime.now().strftime("%H:%M:%S"),
                 })
+                # Phase 3: Sync tutor data to AgentContext
+                _sync_to_ctx(_get_agent_ctx())
+                st.session_state._clear_tutor_input = True  # Clear input next render
                 auto_save_and_rerun()
-
-            if st.session_state.tutor_history:
-                st.markdown("---")
-                st.markdown("### 对话历史")
-                for i, entry in enumerate(reversed(st.session_state.tutor_history)):
-                    with st.expander(f"Q: {entry['question'][:50]}... ({entry['time']})", expanded=(i == 0)):
-                        st.markdown(entry["answer"])
 
         with col2:
             st.markdown("### 学习统计")
@@ -1254,7 +1524,7 @@ elif st.session_state.step == 4:
 
                 if st.button("🔍 搜索答案", type="primary", disabled=not rag_question.strip()):
                     with st.spinner("搜索中..."):
-                        agents = create_agents(course_name=st.session_state.course_name)
+                        agents = _get_cached_agents(course_name=st.session_state.course_name)
                         relevant = st.session_state.rag_helper.query(rag_question, k=4)
                         context = "\n\n".join(relevant)
 
@@ -1288,18 +1558,46 @@ elif st.session_state.step == 4:
     with c2:
         if st.button("📊 学习评估", use_container_width=True):
             st.session_state.step = 5
+            st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 5)
             auto_save_and_rerun()
 
 
 # ============================================================================
 # Step 5: 学习评估（加分项，可选）
 # ============================================================================
+
+    st.divider()
+    if st.button("→ 进入 Step 5: 学习评估", key="step4_next", type="primary", use_container_width=True):
+        st.session_state.step = 5
+        st.session_state._max_step_completed = max(st.session_state.get("_max_step_completed", 1), 5)
+        st.rerun()
 elif st.session_state.step == 5:
     st.markdown('<p class="phase-title">Step 5: 学习评估（加分项）</p>', unsafe_allow_html=True)
+
+    c_back, c_forward = st.columns([1, 5])
+    with c_back:
+        if st.button("← 返回", key="step5_back", use_container_width=True):
+            st.session_state._navigated_back = True
+            st.session_state.step = 4
+            st.rerun()
+
     st.info("💡 这是可选加分项。DeepSeek 评估 + 星火交叉验证，给你最客观的学习诊断。")
 
     if not st.session_state.eval_report:
-        eval_data = f"""## 学生画像
+        # Phase 3: Try LangGraph graph first, fall back to direct call
+        ctx = _get_agent_ctx()
+        _sync_to_ctx(ctx)
+        ctx = run_agent_step(ctx, "eval")
+
+        if ctx.evaluation and ctx.evaluation.report_markdown:
+            st.session_state.eval_report = ctx.evaluation.report_markdown
+            if ctx.evaluation.cross_validation:
+                st.session_state._spark_raw = ctx.evaluation.cross_validation
+                st.session_state._spark_label = "星火"
+            _sync_to_ctx(ctx)
+        else:
+            # Fallback: direct call
+            eval_data = f"""## 学生画像
 {json.dumps(st.session_state.profile, ensure_ascii=False, indent=2)}
 
 ## 学习资源摘要
@@ -1311,15 +1609,16 @@ elif st.session_state.step == 5:
 ## 辅导历史
 {json.dumps([{'q': h['question'], 't': h['time']} for h in st.session_state.tutor_history[-5:]], ensure_ascii=False) if st.session_state.tutor_history else '暂无提问'}"""
 
-        agents = create_agents(course_name=st.session_state.course_name)
-        with st.spinner("DeepSeek + 星火 交叉验证评估中..."):
-            result = agents.cross_validate(eval_data)
-            report = result["merged"]
-            st.session_state._glm_raw = result.get("glm")
-            st.session_state._spark_raw = result.get("spark")
-            st.session_state._spark_label = result.get("spark_label", "星火")
+            agents = _get_cached_agents(course_name=st.session_state.course_name)
+            with st.spinner("DeepSeek + 星火 交叉验证评估中..."):
+                result = agents.cross_validate(eval_data)
+                report = result["merged"]
+                st.session_state._glm_raw = result.get("glm")
+                st.session_state._spark_raw = result.get("spark")
+                st.session_state._spark_label = result.get("spark_label", "星火")
 
-        st.session_state.eval_report = report
+            st.session_state.eval_report = report
+            _sync_to_ctx(_get_agent_ctx())
         auto_save_and_rerun()
 
     report = st.session_state.eval_report
@@ -1344,15 +1643,35 @@ elif st.session_state.step == 5:
             auto_save_and_rerun()
     with c2:
         if st.button("🔄 重新开始", use_container_width=True):
-            for k in list(st.session_state.keys()):
-                if not k.startswith("_") and k not in ("authenticated", "current_uid", "session_resolved"):
-                    del st.session_state[k]
-            for k, v in LEARNING_DEFAULTS.items():
-                st.session_state[k] = v
-            auto_save_and_rerun()
+            st.session_state._show_restart_confirm2 = True
 
+        if st.session_state.get("_show_restart_confirm2"):
+            st.warning("⚠️ 这会清除当前所有学习进度，确定重新开始吗？")
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                if st.button("✅ 确定清除", key="restart_confirm2", type="primary", use_container_width=True):
+                    for k in list(st.session_state.keys()):
+                        if not k.startswith("_") and k not in ("authenticated", "current_uid", "session_resolved"):
+                            del st.session_state[k]
+                    for k, v in LEARNING_DEFAULTS.items():
+                        st.session_state[k] = v
+                    st.session_state._show_restart_confirm2 = False
+                    auto_save_and_rerun()
+            with cc2:
+                if st.button("❌ 取消", key="restart_cancel2", use_container_width=True):
+                    st.session_state._show_restart_confirm2 = False
+                    st.rerun()
+
+
+# ============================================================================
+# 页面持久化：维持 URL 参数以支持浏览器刷新恢复会话
+# ============================================================================
+if st.session_state.get("authenticated") and st.session_state.get("current_uid"):
+    qp_uid = st.query_params.get("uid")
+    if qp_uid != st.session_state.current_uid:
+        st.query_params["uid"] = st.session_state.current_uid
 
 # ============================================================================
 # 页脚
 # ============================================================================
-st.markdown('<div class="footer">A3 个性化学习系统 v3 | 六智能体协同 | UID: ' + str(st.session_state.current_uid) + '</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer">A3 个性化学习系统 v3 | 六智能体协同</div>', unsafe_allow_html=True)

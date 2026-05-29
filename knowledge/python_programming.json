@@ -1,0 +1,146 @@
+{
+  "course_name": "Python程序设计",
+  "description": "系统讲解Python编程语言，涵盖基础语法、数据结构、函数式编程、面向对象、文件操作、常用库及项目实战",
+  "hours": 64,
+  "chapters": [
+    {
+      "id": "ch01",
+      "title": "Python概述与环境搭建",
+      "keywords": ["Python历史", "解释器", "IDE", "虚拟环境", "pip"],
+      "difficulty": 1,
+      "summary": "介绍Python语言的发展历史、特性、安装配置及开发环境搭建",
+      "sections": [
+        {"title": "Python语言简介", "content": "Python由Guido van Rossum于1991年发布，是一种解释型、面向对象、动态类型的高级编程语言。设计哲学强调代码可读性和简洁的语法。Python在Web开发、数据科学、AI/ML、自动化运维等领域广泛应用。"},
+        {"title": "Python解释器安装", "content": "从python.org下载最新版本（推荐3.10+），Windows安装时勾选'Add Python to PATH'。通过命令行输入python --version验证安装成功。推荐使用pyenv管理多版本。"},
+        {"title": "IDE与编辑器选择", "content": "常用开发环境: PyCharm（功能最全的Python IDE）、VS Code + Python插件（轻量高效）、Jupyter Notebook（适合数据分析和学习）。初学者推荐VS Code或PyCharm Community版。"},
+        {"title": "pip与虚拟环境", "content": "pip是Python包管理工具: pip install package_name 安装包。虚拟环境: python -m venv myenv 创建隔离环境，source myenv/bin/activate（Linux/Mac）或 myenv\\Scripts\\activate（Windows）激活。使用虚拟环境可以避免包版本冲突。"},
+        {"title": "第一个Python程序", "content": "print('Hello, World!') —— Python的语法简洁直观，不需要main函数、不需要分号、不需要类型声明。这体现了Python'可执行的伪代码'的设计理念。"}
+      ]
+    },
+    {
+      "id": "ch02",
+      "title": "基本语法与数据类型",
+      "keywords": ["变量", "数字", "字符串", "类型转换", "注释", "运算符"],
+      "difficulty": 1,
+      "summary": "介绍Python的基本语法规则、变量、数字类型、字符串操作及运算符",
+      "sections": [
+        {"title": "变量与命名规则", "content": "Python变量无需声明类型，赋值即创建: x = 10。命名规则: 字母/下划线开头，只能包含字母数字下划线，区分大小写。遵循PEP8: 变量用snake_case，常量用UPPER_CASE。Python是动态类型语言，变量可以重新赋值为不同类型。"},
+        {"title": "数字类型", "content": "Python支持三种数字类型: int（整数，任意精度）、float（浮点数，双精度64位）、complex（复数，如3+4j）。支持常规算术运算: + - * / （真除法）, // （整除）, % （取余）, ** （幂运算）。注意浮点数精度问题: 0.1 + 0.2 != 0.3 是IEEE 754的固有限制。"},
+        {"title": "字符串操作", "content": "字符串用单引号或双引号定义: 'hello' 或 \"hello\"。三引号用于多行字符串。常用操作: +拼接、*重复、[index]索引、[start:end:step]切片、len()长度、in成员检查。字符串方法: .upper(), .lower(), .strip(), .split(), .join(), .replace(), .find()。f-string格式: f'值={变量}' (Python 3.6+推荐)。"},
+        {"title": "类型转换", "content": "int('123') → 123; float('3.14') → 3.14; str(456) → '456'; bool(0) → False, bool('') → False, bool([]) → False。类型转换失败会抛出ValueError。使用type(x)查看变量类型。"},
+        {"title": "注释与文档", "content": "单行注释用 #; 多行注释用三个引号 '''...''' 或 \"\"\"...\"\"\"。Docstring（文档字符串）放在函数/类/模块的第一行，用三引号括起，可通过help()或.__doc__访问。PEP 257规范了docstring的写法。"}
+      ]
+    },
+    {
+      "id": "ch03",
+      "title": "控制流程",
+      "keywords": ["条件判断", "if-elif-else", "循环", "for", "while", "break", "continue", "列表推导式"],
+      "difficulty": 2,
+      "summary": "介绍条件判断、循环结构及流程控制语句",
+      "sections": [
+        {"title": "条件判断", "content": "if-elif-else结构控制代码分支。Python使用缩进（4个空格）而非花括号定义代码块。比较运算符: ==, !=, <, >, <=, >=; 逻辑运算符: and, or, not。Python支持链式比较: 1 < x < 10。三元表达式: x if condition else y。"},
+        {"title": "while循环", "content": "while condition: 当条件为True时重复执行。注意避免死循环——必须在循环体内修改条件变量或使用break。while-else语法: else块在循环正常结束（非break退出）时执行，可用于检测循环是否被break中断。"},
+        {"title": "for循环", "content": "for item in iterable: 遍历可迭代对象的每个元素。range(start, stop, step)生成整数序列: range(5)→0,1,2,3,4; range(2,10,2)→2,4,6,8。enumerate()同时获取索引和值: for i, val in enumerate(list)。zip()并行遍历多个序列。"},
+        {"title": "循环控制", "content": "break: 立即终止循环; continue: 跳过本次迭代剩余代码进入下一轮。嵌套循环中break只退出最内层循环。避免用标志变量控制深层嵌套——考虑抽取函数并使用return。"},
+        {"title": "列表推导式", "content": "[expr for item in iterable if condition] —— Python的标志性特性，简洁高效。例如: [x**2 for x in range(10) if x % 2 == 0] 生成0-9中偶数的平方。也可用于字典: {k:v for k,v in items}; 集合: {x for x in seq}。避免过度嵌套，超过2层应改用传统循环。"}
+      ]
+    },
+    {
+      "id": "ch04",
+      "title": "函数与模块",
+      "keywords": ["函数定义", "参数", "返回值", "lambda", "作用域", "模块", "包", "__name__"],
+      "difficulty": 2,
+      "summary": "介绍函数定义与调用、参数传递、lambda表达式、模块化编程",
+      "sections": [
+        {"title": "函数定义与调用", "content": "def function_name(params): 定义函数。Python函数是一等公民: 可赋值给变量、作为参数传递、作为返回值。推荐每个函数只做一件事，保持短小精悍（<30行为佳）。使用类型提示: def greet(name: str) -> str: 提高可读性。"},
+        {"title": "参数传递", "content": "位置参数: 按顺序匹配; 关键字参数: 通过名称传递，可打乱顺序; 默认参数: def f(a, b=10) —— 默认值在函数定义时计算一次，可变对象（列表、字典）作为默认值会累积修改——用None代替: def f(a, b=None): b = b or []。*args接收任意数量位置参数为元组; **kwargs接收任意数量关键字参数为字典。"},
+        {"title": "变量作用域", "content": "LEGB规则（查找顺序）: Local→Enclosing→Global→Built-in。函数内变量默认局部; 用global声明修改全局变量; 用nonlocal声明修改外层函数变量（闭包中常用）。避免过度使用global——传参和返回值更清晰。"},
+        {"title": "lambda表达式", "content": "lambda params: expression —— 创建匿名函数，只能包含单个表达式。常用于sorted(key=lambda x: x[1]), map(), filter()等。如果逻辑超过一行，改用def——lambda的可读性随复杂度急剧下降。注意: Python中lambda的实际使用频率远低于其他语言，很多场景下列表推导式和生成器表达式更优。"},
+        {"title": "模块与包", "content": ".py文件即模块，文件夹+__init__.py即包。import module 导入整个模块; from module import name 导入特定名称; import module as alias 设置别名。if __name__ == '__main__': 判断是否作为主程序运行——每个模块都应该有这个防护。Python标准库提供了200+模块随解释器一同安装。"}
+      ]
+    },
+    {
+      "id": "ch05",
+      "title": "核心数据结构",
+      "keywords": ["列表", "元组", "字典", "集合", "切片", "排序", "时间复杂度"],
+      "difficulty": 2,
+      "summary": "深入讲解Python的四种核心内置数据结构及常用操作",
+      "sections": [
+        {"title": "列表(list)", "content": "list = [1, 2, 3] ——可变有序序列。常用操作: .append(item)末尾添加O(1); .insert(i, item)指定位置插入O(n); .pop(i)删除并返回O(n); .remove(val)删除第一个匹配O(n); .sort()原地排序O(n log n); .reverse()原地反转。切片: lst[start:end:step]创建浅拷贝。注意: lst * n 创建包含n个引用的列表，对嵌套列表会导致所有复制项共享引用。"},
+        {"title": "元组(tuple)", "content": "tuple = (1, 2, 3) ——不可变有序序列。不可变意味着创建后不能修改。适用于: 函数多返回值、字典键、集合元素（都需要可哈希性）。单元素元组: (1,) 逗号不能省略，否则被解析为括号。元组解包: a, b, c = (1, 2, 3); 扩展解包: first, *rest = range(5) → first=0, rest=[1,2,3,4]。"},
+        {"title": "字典(dict)", "content": "dict = {'key': 'value'} ——键值对映射，Python 3.7+保证插入顺序。键必须可哈希（不可变类型）。常用操作: .get(key, default)安全取值; .setdefault(key, default); .update(other_dict)合并; .items(), .keys(), .values()返回视图对象。字典推导式: {k:v for k,v in pairs}。collections模块提供OrderedDict, defaultdict, Counter等增强字典。"},
+        {"title": "集合(set)", "content": "set = {1, 2, 3} ——无序不重复元素的集合。核心操作: 交集 &, 并集 |, 差集 -, 对称差 ^。方法: .add(item), .remove(item)（不存在报错）, .discard(item)（不存在不报错）。集合推导式: {x for x in seq}。frozenset是不可变集合，可作为字典键。集合基于哈希表实现，in操作O(1)平均复杂度。"},
+        {"title": "复杂度与选择", "content": "选择正确数据结构对性能影响巨大。列表in检查O(n)，集合in检查O(1)——大量成员检查用集合。频繁头部插入用collections.deque (O(1))而非list (O(n))。需要键值对且需排序用OrderedDict，需要计数器用Counter，需要队列/LIFO用deque。Python内置的timeit模块可测量小代码段执行时间。"}
+      ]
+    },
+    {
+      "id": "ch06",
+      "title": "面向对象编程",
+      "keywords": ["类", "对象", "继承", "多态", "封装", "魔术方法", "property", "装饰器"],
+      "difficulty": 3,
+      "summary": "介绍Python面向对象编程的核心概念与实践",
+      "sections": [
+        {"title": "类与对象", "content": "class MyClass: 定义类; obj = MyClass() 创建实例。__init__(self, ...) 构造方法，初始化实例属性。self代表实例本身，必须是实例方法的第一个参数（约定俗成，非关键字）。实例属性通常定义在__init__中; 类属性定义在类体内，所有实例共享。"},
+        {"title": "继承与多态", "content": "class Child(Parent): 单继承; class Child(Parent1, Parent2): 多继承。MRO（方法解析顺序）用C3线性化算法确定，可通过ClassName.__mro__查看。super()调用父类方法。Python支持鸭子类型: '如果它走起来像鸭子，叫起来像鸭子，那它就是鸭子'——不要求显式接口，只要对象有需要的方法即可。"},
+        {"title": "封装与属性", "content": "_name: 约定私有（PEP8建议，实际仍可访问）; __name: 名称改写（name mangling）为_ClassName__name，用于避免子类命名冲突。@property装饰器将方法转为属性访问: 可添加getter/setter/deleter实现计算属性和验证逻辑。Python的封装依赖约定而非强制——'我们都是成年人'是Python社区的理念。"},
+        {"title": "魔术方法", "content": "__str__: str()/print()调用，给用户看的; __repr__: repr()调用，给开发者看的，应尽量能eval()还原对象。__eq__: == 操作符; __lt__: < 排序依据; __len__: len()调用; __getitem__: obj[key]访问，实现此方法即可支持迭代和切片; __enter__/__exit__: 上下文管理器（with语句）。完整列表参考Python数据模型文档。"},
+        {"title": "类方法与静态方法", "content": "@classmethod: 第一个参数是cls（类本身），可用于工厂方法、替代构造函数。@staticmethod: 不接收隐式参数，放在类中仅为了组织代码。最常用的是实例方法（有self）和类方法（@classmethod）。静态方法很少真正需要——模块级函数通常更合适。"}
+      ]
+    },
+    {
+      "id": "ch07",
+      "title": "文件操作与异常处理",
+      "keywords": ["文件读写", "open", "with语句", "异常", "try-except", "上下文管理器", "CSV", "JSON"],
+      "difficulty": 2,
+      "summary": "介绍Python文件I/O操作、异常处理机制及常见数据格式读写",
+      "sections": [
+        {"title": "文件读写", "content": "open(file, mode)打开文件。模式: 'r'读(默认), 'w'写(覆盖), 'a'追加, 'x'排他性创建, 'b'二进制, 't'文本(默认)。推荐用with open(file) as f: 自动关闭文件。.read()读取全部; .readline()读取一行; .readlines()读取所有行返回列表。大文件用for line in f: 逐行迭代避免内存溢出。编码: open(file, encoding='utf-8') 显式指定。"},
+        {"title": "异常处理", "content": "try-except-else-finally结构。try: 可能出错的代码; except ExceptionType as e: 捕获特定异常; else: try成功完成时执行; finally: 无论是否异常都执行（常用于清理资源）。捕获异常从具体到宽泛: except ValueError → except Exception。避免裸except: ——会捕获KeyboardInterrupt和SystemExit。自定义异常: class MyError(Exception): pass。"},
+        {"title": "常见异常类型", "content": "ValueError: 值错误（如int('abc')）; TypeError: 类型错误; KeyError: 字典键不存在; IndexError: 索引越界; FileNotFoundError: 文件不存在; AttributeError: 对象无此属性; ImportError/ModuleNotFoundError: 导入失败。Python异常层次: BaseException ← Exception ← 各种具体异常。所有内置异常见官方文档。"},
+        {"title": "JSON与CSV处理", "content": "json模块: json.dumps(obj) Python→JSON字符串; json.loads(s) JSON字符串→Python; json.dump(obj, f) 写入文件; json.load(f) 从文件读取。默认支持dict/list/str/int/float/bool/None。自定义类需实现default参数或继承JSONEncoder。csv模块: csv.reader(f)读取; csv.writer(f)写入; csv.DictReader/DictWriter使用列名访问。"},
+        {"title": "上下文管理器", "content": "with语句自动管理资源: __enter__()在进入时调用, __exit__()在退出时调用（即使发生异常）。实现上下文管理器的方式: 1) 定义__enter__/__exit__方法; 2) 使用contextlib.contextmanager装饰器将生成器函数转为上下文管理器。典型场景: 文件操作、数据库连接、锁的获取释放、临时目录、计时器等。"}
+      ]
+    },
+    {
+      "id": "ch08",
+      "title": "常用标准库",
+      "keywords": ["os", "sys", "datetime", "collections", "itertools", "functools", "pathlib", "re"],
+      "difficulty": 3,
+      "summary": "介绍Python标准库中高频使用的模块",
+      "sections": [
+        {"title": "os与pathlib", "content": "os模块提供操作系统接口: os.getcwd()当前目录, os.listdir()列出文件, os.path.join()拼接路径, os.makedirs()创建目录, os.environ环境变量。pathlib（Python 3.4+推荐）提供面向对象的路径操作: Path('.').glob('*.py'), Path.home(), path.read_text(), path.write_text()。路径操作优先使用pathlib——更简洁、跨平台、类型安全。"},
+        {"title": "datetime时间处理", "content": "datetime.datetime.now()当前时间; datetime.timedelta时间差计算; .strftime('%Y-%m-%d %H:%M:%S')格式化; .strptime()解析。处理时区用pytz或Python 3.9+的zoneinfo。datetime.date处理日期; datetime.time处理时间。timestamp()与fromtimestamp()实现时间戳转换。时间计算用timedelta: dt + timedelta(days=7)。"},
+        {"title": "collections容器", "content": "Counter: 计数器，统计元素频率 Counter(list).most_common(3); defaultdict: 带默认值的字典 defaultdict(list); OrderedDict: 有序字典（3.7+普通dict也保序但语义不同）; deque: 双端队列，两端append/pop都是O(1); namedtuple: 命名元组，用属性名访问字段; ChainMap: 多个映射的逻辑合并。这些是高频面试和实际项目中极其实用的数据结构。"},
+        {"title": "itertools与functools", "content": "itertools提供高效迭代器: count()无限计数, cycle()无限循环, repeat()重复, chain()串联, islice()切片, groupby()分组, product()笛卡尔积, permutations()排列, combinations()组合。functools提供高阶函数: @lru_cache装饰器缓存函数结果; partial()偏函数预填参数; reduce()累积计算。这些工具组合使用能写出极简洁的函数式代码。"},
+        {"title": "正则表达式(re)", "content": "re.search(pattern, text)搜索第一个匹配; re.findall(pattern, text)查找所有匹配; re.sub(pattern, repl, text)替换。常用模式: \\d数字, \\w字母数字, \\s空白, .任意字符, *零或多, +一或多, ?零或一, {n,m}重复n到m次, [abc]字符组, (group)捕获组。原始字符串r'\\d+'避免反斜杠转义。注意贪婪匹配——用?后缀转为非贪婪: .*?。复杂正则考虑用verbose模式re.VERBOSE添加注释。"}
+      ]
+    },
+    {
+      "id": "ch09",
+      "title": "常用第三方库",
+      "keywords": ["numpy", "pandas", "matplotlib", "requests", "flask", "pillow"],
+      "difficulty": 3,
+      "summary": "介绍数据科学和Web开发中最常用的第三方库",
+      "sections": [
+        {"title": "NumPy数值计算", "content": "NumPy提供高性能多维数组ndarray和数学函数。np.array([1,2,3])创建数组; .reshape(rows, cols)重塑; 广播(broadcasting)机制: 不同形状数组的自动对齐运算。常用: np.arange(), np.linspace(), np.random, np.dot()矩阵乘, np.sum/mean/std在指定axis。NumPy的C语言实现使其比纯Python循环快10-100倍。向量化操作代替显式循环是性能关键。"},
+        {"title": "Pandas数据分析", "content": "Pandas提供DataFrame（二维表）和Series（一维序列）。pd.read_csv/excel/sql读取数据; df.head()预览; df.describe()统计摘要; df[col]选择列; df.loc[row, col]标签索引; df.iloc[row, col]位置索引; df.groupby(col).agg()分组聚合; df.merge()表连接; df.to_csv/excel()导出。处理缺失值: df.dropna()删除, df.fillna(val)填充。链式操作: (df.query().groupby().agg().reset_index()) 是Pandas推荐的写法。"},
+        {"title": "Matplotlib数据可视化", "content": "Matplotlib是Python可视化的基础库。plt.plot(x, y)线图; plt.scatter()散点图; plt.bar()柱状图; plt.hist()直方图; plt.pie()饼图。面向对象API（推荐）: fig, ax = plt.subplots(); ax.plot(...); ax.set_xlabel(...)。plt.savefig('out.png', dpi=300)保存高清图。Seaborn基于Matplotlib提供更美观的统计图表: sns.heatmap(), sns.pairplot()等。"},
+        {"title": "requests与Web请求", "content": "requests是Python最流行的HTTP库。requests.get(url, params={}) GET请求; .post(url, json={}) POST JSON; .headers查看响应头; .json()解析JSON响应; .status_code状态码; .raise_for_status()非200时抛异常。Session()保持cookie和连接池。超时设置: requests.get(url, timeout=5)。文件下载: with open('f', 'wb') as f: f.write(r.content)。优雅地处理网络异常是生产代码的关键。"}
+      ]
+    },
+    {
+      "id": "ch10",
+      "title": "项目实战与最佳实践",
+      "keywords": ["PEP8", "调试", "测试", "Git", "日志", "性能优化", "虚拟环境"],
+      "difficulty": 3,
+      "summary": "介绍Python项目开发的工程实践和调试技巧",
+      "sections": [
+        {"title": "PEP8代码风格", "content": "PEP 8是Python官方代码风格指南。核心规则: 4空格缩进、每行≤79字符、函数间空2行、类间空2行、导入按标准库→第三方→本地顺序分组、每行一个导入。命名约定: 模块short_name, 类CamelCase, 函数snake_case, 常量UPPER_CASE, _private前缀。工具: flake8/pylint自动检查, black自动格式化, isort排序导入。好风格不是审美问题——它降低认知负担，减少bug。"},
+        {"title": "调试技巧", "content": "print()是最简单有效的调试方式，但大项目应用logging。pdb: import pdb; pdb.set_trace()进入交互调试器，可用n(next), s(step), c(continue), p(print变量), l(list代码)。VS Code/PyCharm提供图形化断点调试更直观。logging模块: logging.debug/info/warning/error/critical 分级输出，可同时写入文件和控制台。logging比print的优势: 可关可开、带时间戳、可记录到文件、可按级别过滤。"},
+        {"title": "单元测试", "content": "unittest（内置）: class TestXxx(unittest.TestCase); pytest（推荐）: 简洁的断言语法，丰富的插件生态。测试文件: test_*.py; 测试函数: def test_xxx():; 断言: assert result == expected。mock/patch用于模拟外部依赖。测试覆盖率工具: coverage.py + pytest-cov。好的测试: 快速、独立、可重复、自验证、及时。测试不是为了证明代码正确——是为了让你敢于修改和重构。"},
+        {"title": "Git版本控制", "content": "git init初始化仓库; git add .暂存; git commit -m 'msg'提交; git push/pull推拉; git branch创建分支; git merge合并; git log查看历史。.gitignore排除不需要追踪的文件(__pycache__/, *.pyc, .env, venv/)。原子提交: 每个commit只做一件事。好的commit message: 50字符以内的标题 + 空行 + 详细说明为什么改。"},
+        {"title": "性能优化思维", "content": "先让它工作，再让它正确，最后让它快——过早优化是万恶之源。性能分析: cProfile找出瓶颈; timeit测量小代码段; memory_profiler分析内存。常见优化: 用集合代替列表做成员检查; 用生成器代替列表避免大内存分配; 用.join()代替字符串+=; 用numpy向量化代替循环; 用@lru_cache缓存重复计算; 多线程(IO密集)或multiprocessing(CPU密集)并行处理。优化前必须测量——直觉在性能问题上经常出错。"}
+      ]
+    }
+  ]
+}
