@@ -1,0 +1,34 @@
+# A3 v3 个性化学习多智能体系统 — 依赖
+# 安装: pip install -r requirements.txt
+# 需要 Python >= 3.10
+
+# AI Agent 框架
+phidata>=2.7.0
+
+# OpenAI SDK（用于 DeepSeek / 讯飞星火兼容接口）
+openai>=2.0.0
+
+# Web UI
+streamlit>=1.28.0
+
+# RAG 向量数据库
+chromadb>=1.5.0
+langchain>=1.3.0
+langchain-community>=0.4.0
+langchain-chroma>=1.1.0
+langchain-text-splitters>=1.1.0
+langchain-classic>=1.0.0
+
+# 本地嵌入模型
+sentence-transformers>=5.0.0
+
+# 文档加载
+pymupdf>=1.24.0
+
+# 用户认证
+bcrypt>=5.0
+filelock>=3.0
+
+# 工具
+pyyaml>=6.0
+python-dotenv>=1.0.0

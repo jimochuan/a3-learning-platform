@@ -1,0 +1,30 @@
+# 环境变量（含 API Key，切勿提交）
+.env
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 运行时数据
+chroma_db/
+user_data/
+
+# 测试输出
+_test_report.json
+docs/test-report-*.md
+docs/plans/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Streamlit
+.streamlit/secrets.toml
