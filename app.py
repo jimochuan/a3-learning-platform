@@ -327,19 +327,142 @@ if not _api["any_connected"]:
     st.info("配置好 .env 后按 F5 刷新页面即可重新检测。系统已预置星火作为兜底。")
     st.stop()
 
+# ---- 辅助函数：写配置到 .env ----
+def _save_to_env(provider_key: str = None, api_key: str = None, primary_model: str = None):
+    """将 API Key 或主力模型写入 .env 文件"""
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    env_var_map = {
+        "deepseek": "DEEPSEEK_API_KEY",
+        "qwen": "QWEN_API_KEY",
+        "moonshot": "MOONSHOT_API_KEY",
+        "glm": "GLM_API_KEY",
+        "baichuan": "BAICHUAN_API_KEY",
+        "spark": "SPARK_API_KEY",
+    }
+
+    # 如果 .env 不存在，从模板复制
+    if not os.path.exists(env_path):
+        import shutil
+        example_path = os.path.join(os.path.dirname(__file__), ".env.example")
+        if os.path.exists(example_path):
+            shutil.copy(example_path, env_path)
+
+    if not os.path.exists(env_path):
+        return False
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    import re as _re
+
+    # 写 API Key
+    if provider_key and api_key is not None:
+        var_name = env_var_map.get(provider_key)
+        if var_name:
+            pattern = _re.compile(rf"^{var_name}=.*$", _re.MULTILINE)
+            if pattern.search(content):
+                content = pattern.sub(f"{var_name}={api_key}", content)
+            else:
+                content += f"\n{var_name}={api_key}\n"
+            os.environ[var_name] = api_key
+
+    # 写主力模型
+    if primary_model:
+        pattern = _re.compile(r"^PRIMARY_MODEL=.*$", _re.MULTILINE)
+        if pattern.search(content):
+            content = pattern.sub(f"PRIMARY_MODEL={primary_model}", content)
+        else:
+            content += f"\nPRIMARY_MODEL={primary_model}\n"
+        os.environ["PRIMARY_MODEL"] = primary_model
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return True
+
+
+# ---- 所有可配置的供应商列表 ----
+_ALL_PROVIDERS = [
+    k for k, v in _api.items()
+    if k not in ("any_connected", "primary_connected", "primary_key", "_primary")
+]
+
 # ---- 至少有一个通了 -> 侧边栏状态灯 ----
 with st.sidebar:
     with st.expander("API Status", expanded=not _api["primary_connected"]):
-        for _pk, _pi in _api.items():
-            if _pk in ("any_connected", "primary_connected", "primary_key", "_primary"):
-                continue
+        # 状态摘要
+        for _pk in _ALL_PROVIDERS:
+            _pi = _api[_pk]
             if not _pi["ready"]:
-                st.caption(f"- {_pi['label']}: not configured")
+                st.caption(f"○ {_pi['label']}: not configured")
             elif _pi["connected"]:
-                _mark = ">>" if _pk == _primary_key else "  "
-                st.caption(f"{_mark} {_pi['label']}: {_pi['latency_ms']}ms OK")
+                _mark = "●" if _pk == _primary_key else "○"
+                _active = "(当前)" if _pk == _primary_key else ""
+                st.caption(f"{_mark} {_pi['label']}: {_pi['latency_ms']}ms OK {_active}")
             else:
-                st.caption(f"!! {_pi['label']}: {_pi['error']}")
+                st.caption(f"⚠ {_pi['label']}: {_pi['error']}")
+
+        st.divider()
+
+        # ---- 切换主力模型 ----
+        _current_primary = os.getenv("PRIMARY_MODEL", "deepseek")
+        _primary_options = {_api[k]["label"]: k for k in _ALL_PROVIDERS if _api[k]["ready"]}
+        _primary_labels = list(_primary_options.keys())
+        if _primary_labels:
+            _current_label = _api.get(_current_primary, {}).get("label", "DeepSeek")
+            if _current_label in _primary_labels:
+                _default_idx = _primary_labels.index(_current_label)
+            else:
+                _default_idx = 0
+
+            _chosen_label = st.selectbox(
+                "主力模型",
+                _primary_labels,
+                index=_default_idx,
+                key="primary_model_selector",
+            )
+            _chosen_key = _primary_options[_chosen_label]
+            if _chosen_key != _current_primary:
+                if _save_to_env(primary_model=_chosen_key):
+                    st.session_state.api_test_done = False
+                    st.rerun()
+
+        # ---- 配置 / 更换 API Key ----
+        _need_rerun = False
+        for _pk in _ALL_PROVIDERS:
+            _pi = _api[_pk]
+            _status_icon = "●" if (_pi["ready"] and _pi["connected"]) else "○"
+            with st.expander(f"{_status_icon} {_pi['label']}", expanded=False):
+                st.caption(_pi["desc"])
+                st.caption(f"注册: {_pi['register_url']}")
+                _current_key = os.getenv(
+                    {"deepseek": "DEEPSEEK_API_KEY", "qwen": "QWEN_API_KEY",
+                     "moonshot": "MOONSHOT_API_KEY", "glm": "GLM_API_KEY",
+                     "baichuan": "BAICHUAN_API_KEY", "spark": "SPARK_API_KEY"}.get(_pk, ""), "")
+                _has_key = bool(_current_key and _current_key not in ("你的Key填这里", ""))
+                if _has_key:
+                    _masked = _current_key[:6] + "****" + _current_key[-4:] if len(_current_key) > 10 else "****"
+                    st.caption(f"当前 Key: {_masked}")
+
+                with st.form(key=f"apikey_form_{_pk}", clear_on_submit=True):
+                    _col1, _col2 = st.columns([3, 1])
+                    with _col1:
+                        _new_key = st.text_input(
+                            "Key",
+                            type="password",
+                            placeholder="sk-..." if not _has_key else "粘贴新 Key 替换",
+                            key=f"apikey_input_{_pk}",
+                            label_visibility="collapsed",
+                        )
+                    with _col2:
+                        _submitted = st.form_submit_button("保存", use_container_width=True)
+                    if _submitted and _new_key.strip():
+                        if _save_to_env(provider_key=_pk, api_key=_new_key.strip()):
+                            st.caption("✓ 已保存")
+                            _need_rerun = True
+
+        if _need_rerun:
+            st.session_state.api_test_done = False
+            st.rerun()
 
     if not _api["primary_connected"]:
         _expected_label = _api["_primary"]["label"]

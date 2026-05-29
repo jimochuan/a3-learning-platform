@@ -9,8 +9,24 @@ from typing import List, Optional
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-import chromadb
-from chromadb.utils import embedding_functions
+
+# chromadb 懒加载（Streamlit Cloud 上 protobuf/opentelemetry 版本冲突，延迟到实际使用时 import）
+_chromadb = None
+_embedding_functions = None
+
+def _get_chromadb():
+    global _chromadb
+    if _chromadb is None:
+        import chromadb as _c
+        _chromadb = _c
+    return _chromadb
+
+def _get_embedding_functions():
+    global _embedding_functions
+    if _embedding_functions is None:
+        from chromadb.utils import embedding_functions as _ef
+        _embedding_functions = _ef
+    return _embedding_functions
 
 
 class RAGHelper:
@@ -44,13 +60,13 @@ class RAGHelper:
             # 设置短超时，避免在国内网络环境下长时间卡死
             import os as _os
             _os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "10")
-            self.embeddings = embedding_functions.SentenceTransformerEmbeddingFunction(
+            self.embeddings = _get_embedding_functions().SentenceTransformerEmbeddingFunction(
                 model_name="paraphrase-multilingual-MiniLM-L12-v2"
             )
         except Exception as e:
             self._embed_init_error = str(e)
             self._use_local_embed = False
-            self.embeddings = embedding_functions.DefaultEmbeddingFunction()
+            self.embeddings = _get_embedding_functions().DefaultEmbeddingFunction()
 
     def _init_store(self):
         """初始化向量数据库（Chromadb 客户端本身不依赖嵌入模型，可提前初始化）"""
