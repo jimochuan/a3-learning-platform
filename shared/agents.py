@@ -52,41 +52,68 @@ class SafeOpenAIChat(OpenAIChat):
 
 
 # ============================================================================
-# 模型工厂：DeepSeek（主力）+ 讯飞星火（交叉验证）
+# 模型工厂：根据 PRIMARY_MODEL 动态选择主力模型
 # ============================================================================
+def _get_primary_config() -> dict:
+    """读取 .env 中的 PRIMARY_MODEL，返回对应供应商配置"""
+    from providers.registry import PROVIDERS
+    primary = os.getenv("PRIMARY_MODEL", "deepseek")
+    return PROVIDERS.get(primary, PROVIDERS["deepseek"])
+
+
 def _primary_model(temperature: float = 0.7) -> SafeOpenAIChat:
-    """主力模型：DeepSeek（已适配 developer role 兼容）"""
+    """主力模型：根据 PRIMARY_MODEL 动态选择"""
+    cfg = _get_primary_config()
+    api_key = cfg["api_key"]
+    if cfg.get("api_secret"):
+        api_key = f"{cfg['api_key']}:{cfg['api_secret']}"
     return SafeOpenAIChat(
-        id=DEEPSEEK_CONFIG["MODEL"],
-        base_url=DEEPSEEK_CONFIG["BASE_URL"],
-        api_key=DEEPSEEK_CONFIG["API_KEY"],
+        id=cfg["model"],
+        base_url=cfg["base_url"],
+        api_key=api_key,
         temperature=temperature,
-        max_tokens=DEEPSEEK_CONFIG["MAX_TOKENS"],
+        max_tokens=cfg.get("max_tokens", 4096),
     )
 
 
-def _spark_model(temperature: float = 0.7) -> SafeOpenAIChat:
-    """讯飞星火模型（仅用于交叉验证，不动）"""
-    return SafeOpenAIChat(
-        id=SPARK_CONFIG["MODEL"],
-        base_url=SPARK_CONFIG["BASE_URL"],
-        api_key=f"{SPARK_CONFIG['API_KEY']}:{SPARK_CONFIG['API_SECRET']}",
-        temperature=temperature,
-        max_tokens=SPARK_CONFIG["MAX_TOKENS"],
-    )
+def _get_aux_config() -> dict:
+    """备用交叉验证模型"""
+    from providers.registry import PROVIDERS
+    aux = os.getenv("AUX_MODEL", "spark")
+    return PROVIDERS.get(aux, PROVIDERS["spark"])
+
+
+def _aux_model(temperature: float = 0.5) -> SafeOpenAIChat:
+    """备用交叉验证模型"""
+    cfg = _get_aux_config()
+    api_key = cfg["api_key"]
+    if cfg.get("api_secret"):
+        api_key = f"{cfg['api_key']}:{cfg['api_secret']}"
+    try:
+        return SafeOpenAIChat(
+            id=cfg["model"],
+            base_url=cfg["base_url"],
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=cfg.get("max_tokens", 2048),
+        )
+    except Exception:
+        return None
 
 
 def _cross_validator(temperature: float = 0.5) -> tuple:
-    """交叉验证模型：星火
+    """交叉验证模型：根据配置选择
     返回 (模型实例, 模型名称) 或 (None, "")
     """
     try:
-        m = _spark_model(temperature)
-        return (m, "星火")
-    except Exception as e:
-        # 静默降级：星火不可用时不影响主流程
+        m = _aux_model(temperature)
+        if m is None:
+            return (None, "")
+        cfg = _get_aux_config()
+        return (m, cfg["label"])
+    except Exception:
         import logging
-        logging.getLogger(__name__).warning(f"星火模型初始化失败(将跳过交叉验证): {type(e).__name__}")
+        logging.getLogger(__name__).warning("备用模型初始化失败(将跳过交叉验证)")
         return (None, "")
 
 
@@ -299,16 +326,17 @@ class StudyAgents:
 
         return result
 
-    def _merge_evals(self, glm_eval: str, spark_eval: str, spark_name: str) -> str:
-        """融合 DeepSeek 和星火评估"""
+    def _merge_evals(self, primary_eval: str, aux_eval: str, aux_name: str) -> str:
+        """融合主力和备用模型评估"""
+        _primary_label = _get_primary_config()["label"]
         merge_prompt = f"""融合以下两份评估报告，生成最终综合评估。
 规则: 一致结论保留, 评分取平均, 分歧标注"双模型存在分歧"并列观点, 建议取并集。
 
-=== DeepSeek 评估报告 ===
-{glm_eval}
+=== {_primary_label} 评估报告 ===
+{primary_eval}
 
-=== {spark_name} 评估报告 ===
-{spark_eval}
+=== {aux_name} 评估报告 ===
+{aux_eval}
 
 输出融合后综合评估报告，Markdown格式。"""
         merger = Agent(model=self._pm_merge, system_prompt="你是评估仲裁专家。")
@@ -327,27 +355,32 @@ def create_agents(course_name: str = "", student_info: dict = None) -> StudyAgen
 def run_with_fallback(primary_agent: Agent, prompt: str, max_retries: int = 2):
     """带重试和降级的 agent.run() 封装
 
-    先尝试主力模型（DeepSeek），重试 max_retries 次。
-    全部失败后降级到星火。
+    先尝试主力模型，重试 max_retries 次。
+    全部失败后降级到备用模型。
 
     返回 (response_content: str, model_label: str)
     """
+    _primary_cfg = _get_primary_config()
+    _primary_label = _primary_cfg["label"]
+
     last_error = None
     for attempt in range(max_retries):
         try:
             resp = primary_agent.run(prompt, stream=False)
-            return (resp.content, "DeepSeek")
+            return (resp.content, _primary_label)
         except Exception as e:
             last_error = e
             if attempt < max_retries - 1:
                 time.sleep(1)
 
-    # 降级到星火
+    # 降级到备用模型
     try:
-        spark = _spark_model(0.5)
-        fallback = Agent(model=spark, system_prompt=primary_agent.system_prompt)
-        resp = fallback.run(prompt, stream=False)
-        return (resp.content, "星火(备用)")
+        aux = _aux_model(0.5)
+        if aux is not None:
+            fallback = Agent(model=aux, system_prompt=primary_agent.system_prompt)
+            resp = fallback.run(prompt, stream=False)
+            _aux_cfg = _get_aux_config()
+            return (resp.content, f"{_aux_cfg['label']}(备用)")
     except Exception:
         pass
 
@@ -369,13 +402,14 @@ def stream_chat(primary_agent: Agent, prompt: str):
             if attempt < 1:
                 time.sleep(1)
 
-    # 降级到星火
+    # 降级到备用模型
     try:
-        spark = _spark_model(0.5)
-        fallback = Agent(model=spark, system_prompt=primary_agent.system_prompt)
-        for chunk in fallback.run(prompt, stream=True):
-            content = chunk.content if hasattr(chunk, 'content') else str(chunk)
-            if content:
-                yield content
+        aux = _aux_model(0.5)
+        if aux is not None:
+            fallback = Agent(model=aux, system_prompt=primary_agent.system_prompt)
+            for chunk in fallback.run(prompt, stream=True):
+                content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                if content:
+                    yield content
     except Exception:
         raise last_error

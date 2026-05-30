@@ -349,12 +349,18 @@ def _generate_change_summary(changes_info: dict) -> str:
 
     try:
         from openai import OpenAI
+        from providers.registry import PROVIDERS
+        _pkey = os.getenv("PRIMARY_MODEL", "deepseek")
+        _pcfg = PROVIDERS.get(_pkey, PROVIDERS["deepseek"])
+        _api_key = _pcfg["api_key"]
+        if _pcfg.get("api_secret"):
+            _api_key = f"{_pcfg['api_key']}:{_pcfg['api_secret']}"
         client = OpenAI(
-            api_key=DEEPSEEK_CONFIG.get("API_KEY", os.getenv("DEEPSEEK_API_KEY", "")),
-            base_url=DEEPSEEK_CONFIG.get("BASE_URL", "https://api.deepseek.com/v1"),
+            api_key=_api_key,
+            base_url=_pcfg["base_url"],
         )
         resp = client.chat.completions.create(
-            model=DEEPSEEK_CONFIG.get("MODEL", "deepseek-chat"),
+            model=_pcfg["model"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             max_tokens=200,
