@@ -809,55 +809,72 @@ with st.sidebar:
             else:
                 st.caption(f"⚠ {_pi['label']}: {_pi['error']}")
 
-        st.divider()
+        # ---- 配置 / 更换 API Key ----
+        _any_unconfigured = any(not _api[k]["ready"] for k in _ALL_PROVIDERS if not _api[k].get("builtin"))
+        _any_connected = any(_api[k]["connected"] for k in _ALL_PROVIDERS)
+        if _any_unconfigured or _any_connected:
+            st.divider()
+            st.caption("配置或更换 API Key（保存后立即生效）：")
+            _need_rerun = False
+            for _pk in _ALL_PROVIDERS:
+                _pi = _api[_pk]
+                _status_icon = "●" if (_pi["ready"] and _pi["connected"]) else "○"
+                with st.expander(f"{_status_icon} {_pi['label']}", expanded=False):
+                    st.caption(_pi["desc"])
+                    st.caption(f"注册: {_pi['register_url']}")
+                    _current_key = os.getenv({
+                        "deepseek": "DEEPSEEK_API_KEY", "qwen": "QWEN_API_KEY",
+                        "moonshot": "MOONSHOT_API_KEY", "glm": "GLM_API_KEY",
+                        "baichuan": "BAICHUAN_API_KEY", "spark": "SPARK_API_KEY",
+                    }.get(_pk, ""), "")
+                    _has_key = bool(_current_key and _current_key not in ("你的Key填这里", ""))
+                    if _has_key:
+                        _masked = _current_key[:6] + "****" + _current_key[-4:] if len(_current_key) > 10 else "****"
+                        st.caption(f"当前 Key: {_masked}")
+                    with st.form(key=f"apikey_form_{_pk}", clear_on_submit=True):
+                        _col1, _col2 = st.columns([3, 1])
+                        with _col1:
+                            _new_key = st.text_input("Key", type="password", placeholder="sk-..." if not _has_key else "粘贴新 Key 替换", key=f"apikey_input_{_pk}", label_visibility="collapsed")
+                        with _col2:
+                            _submitted = st.form_submit_button("保存", use_container_width=True)
+                        if _submitted and _new_key.strip():
+                            if _save_to_env(provider_key=_pk, api_key=_new_key.strip()):
+                                st.caption("✓ 已保存")
+                                _need_rerun = True
+            if _need_rerun:
+                st.session_state.api_test_done = False
+                st.rerun()
 
-        # 切换主力模型
-        _current_primary = os.getenv("PRIMARY_MODEL", "deepseek")
-        _primary_options = {_api[k]["label"]: k for k in _ALL_PROVIDERS if _api[k]["ready"]}
-        _primary_labels = list(_primary_options.keys())
-        if _primary_labels:
-            _current_label = _api.get(_current_primary, {}).get("label", "DeepSeek")
-            if _current_label in _primary_labels:
-                _default_idx = _primary_labels.index(_current_label)
-            else:
-                _default_idx = 0
-            _chosen_label = st.selectbox("主力模型", _primary_labels, index=_default_idx, key="primary_model_selector")
-            _chosen_key = _primary_options[_chosen_label]
-            if _chosen_key != _current_primary:
-                if _save_to_env(primary_model=_chosen_key):
-                    st.session_state.api_test_done = False
-                    st.rerun()
+    st.divider()
 
-        # 配置/更换 Key
-        _need_rerun = False
-        for _pk in _ALL_PROVIDERS:
-            _pi = _api[_pk]
-            _status_icon = "●" if (_pi["ready"] and _pi["connected"]) else "○"
-            with st.expander(f"{_status_icon} {_pi['label']}", expanded=False):
-                st.caption(_pi["desc"])
-                st.caption(f"注册: {_pi['register_url']}")
-                _current_key = os.getenv({
-                    "deepseek": "DEEPSEEK_API_KEY", "qwen": "QWEN_API_KEY",
-                    "moonshot": "MOONSHOT_API_KEY", "glm": "GLM_API_KEY",
-                    "baichuan": "BAICHUAN_API_KEY", "spark": "SPARK_API_KEY",
-                }.get(_pk, ""), "")
-                _has_key = bool(_current_key and _current_key not in ("你的Key填这里", ""))
-                if _has_key:
-                    _masked = _current_key[:6] + "****" + _current_key[-4:] if len(_current_key) > 10 else "****"
-                    st.caption(f"当前 Key: {_masked}")
-                with st.form(key=f"apikey_form_{_pk}", clear_on_submit=True):
-                    _col1, _col2 = st.columns([3, 1])
-                    with _col1:
-                        _new_key = st.text_input("Key", type="password", placeholder="sk-..." if not _has_key else "粘贴新 Key 替换", key=f"apikey_input_{_pk}", label_visibility="collapsed")
-                    with _col2:
-                        _submitted = st.form_submit_button("保存", use_container_width=True)
-                    if _submitted and _new_key.strip():
-                        if _save_to_env(provider_key=_pk, api_key=_new_key.strip()):
-                            st.caption("✓ 已保存")
-                            _need_rerun = True
-        if _need_rerun:
-            st.session_state.api_test_done = False
-            st.rerun()
+    # ---- 主力模型切换（始终可见）----
+    st.markdown("### 🤖 当前模型")
+    _current_primary = os.getenv("PRIMARY_MODEL", "deepseek")
+    _primary_options = {_api[k]["label"]: k for k in _ALL_PROVIDERS if _api[k]["ready"]}
+    _primary_labels = list(_primary_options.keys())
+    if _primary_labels:
+        _current_label = _api.get(_current_primary, {}).get("label", "DeepSeek")
+        if _current_label in _primary_labels:
+            _default_idx = _primary_labels.index(_current_label)
+        else:
+            _default_idx = 0
+        _chosen_label = st.selectbox(
+            "选择主力模型",
+            _primary_labels,
+            index=_default_idx,
+            key="primary_model_selector",
+            help="切换后立即生效，所有 AI 功能都将使用该模型",
+        )
+        _chosen_key = _primary_options[_chosen_label]
+        if _chosen_key != _current_primary:
+            if _save_to_env(primary_model=_chosen_key):
+                st.session_state.api_test_done = False
+                st.rerun()
+        # 显示当前模型状态
+        if _api.get(_chosen_key, {}).get("connected"):
+            st.caption(f"✅ {_chosen_label} · {_api[_chosen_key]['latency_ms']}ms")
+        else:
+            st.caption(f"⚠️ {_chosen_label} · 未连接，将降级到可用模型")
 
     st.divider()
     st.markdown("## ⚙️ 控制台")
