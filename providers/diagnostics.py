@@ -24,6 +24,25 @@ def test_api_connectivity() -> dict:
     primary_connected = False
     any_connected = False
 
+    # 环境变量 → 供应商 key 映射（支持运行时通过 UI 修改后即时生效）
+    _ENV_MAP = {
+        "DEEPSEEK_API_KEY": "deepseek",
+        "QWEN_API_KEY": "qwen",
+        "MOONSHOT_API_KEY": "moonshot",
+        "GLM_API_KEY": "glm",
+        "BAICHUAN_API_KEY": "baichuan",
+        "SPARK_API_KEY": "spark",
+        "SPARK_API_SECRET": "spark",
+    }
+    # 从当前环境变量刷新 PROVIDERS（因为用户可能通过 UI 更新了 .env）
+    for env_var, pkey in _ENV_MAP.items():
+        val = os.getenv(env_var, "")
+        if val:
+            if "SECRET" in env_var:
+                PROVIDERS[pkey]["api_secret"] = val
+            else:
+                PROVIDERS[pkey]["api_key"] = val
+
     for pkey, cfg in PROVIDERS.items():
         ready = cfg.get("builtin", False) or bool(cfg["api_key"])
         connected = False
@@ -72,10 +91,13 @@ def test_api_connectivity() -> dict:
             if pkey == PRIMARY_MODEL:
                 primary_connected = True
 
+    # 从环境变量刷新主力模型（支持运行时通过 UI 切换）
+    _current_primary = os.getenv("PRIMARY_MODEL", "deepseek")
+
     results["any_connected"] = any_connected
     results["primary_connected"] = primary_connected
-    results["primary_key"] = PRIMARY_MODEL
-    results["_primary"] = PROVIDERS.get(PRIMARY_MODEL, PROVIDERS["deepseek"])
+    results["primary_key"] = _current_primary
+    results["_primary"] = PROVIDERS.get(_current_primary, PROVIDERS["deepseek"])
 
     return results
 
